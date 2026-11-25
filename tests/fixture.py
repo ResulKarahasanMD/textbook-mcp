@@ -42,7 +42,7 @@ def ekle(con: sqlite3.Connection, book_id: int, page: int, text: str, v: np.ndar
 
 
 def kaba_kuvvet(con: sqlite3.Connection, qv: np.ndarray, limit: int, where: str, params: tuple) -> list[int]:
-    """Expected result: dot product over the rows matching the filter, top `limit` ids in descending order."""
+    """Expected result: dot product over the rows matching the filter, the top `limit` ids by descending score."""
     rows = con.execute("SELECT e.chunk_id, e.vec FROM embeddings e JOIN chunks c ON c.id=e.chunk_id"
                        " JOIN books b ON b.id=c.book_id WHERE " + where, params).fetchall()
     q = qv.astype(np.float32)

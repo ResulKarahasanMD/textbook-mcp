@@ -197,7 +197,7 @@ def slugify(name: str, taken: set[str], strip: tuple[str, ...] = ()) -> str:
     """Derive a short, unique slug from the file name.
 
     strip: regular expressions to remove from the name before slugging
-    (case-insensitive). Empty by default; if the file names carry a fixed suffix or tail,
+    (case-insensitive). Empty by default; if the file names carry a fixed suffix or trailing text,
     pass them on the command line with --strip-name.
     """
     s = name

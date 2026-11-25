@@ -111,7 +111,7 @@ def db() -> sqlite3.Connection:
                                        check_same_thread=False)
                 # mmap: OFF BY DEFAULT -- measured, no gain.
                 # 2026-09-22, 982,878-row matrix, 4 repetitions each in separate
-                # processes: on mean 2.85 s (median 2.08), off mean 2.61 s
+                # processes: mmap on: mean 2.85 s (median 2.08); off: mean 2.61 s
                 # (median 2.32). The difference is within the noise; each series has
                 # one outlier (5.33 / 3.86 s). The acceptance criterion was >=10%.
                 # CAUTION: only the WARM state was measured. A COLD start (the only
@@ -175,7 +175,7 @@ def textbook_search(query: str, book: str = "", top_k: int = 8) -> str:
 
     SCOPE: only the 'textbook' collection. For lecture notes (the 'notes' collection)
     use textbook_notes_search — this tool does NOT return them.
-    The lock is deliberate: measured, for a query in the notes' language, note chunks
+    This restriction is deliberate: measured, for a query in the notes' language, note chunks
     entered the 30-candidate pool through BM25 and could push a high-scoring textbook
     chunk out before it ever reached the reranker. When the two collections are
     searched separately, both get full recall.
@@ -419,7 +419,7 @@ def _idle_watchdog() -> None:
 
     The process does NOT die: the stdio pipe stays open and the client does not have to
     reconnect. The wake-up interval follows the remaining time; after an unload it quietly
-    loops every 30 s (no cost when unload() returns empty-handed).
+    loops every 30 s (no cost when unload() returns False).
     """
     while True:
         with _activity_lock:

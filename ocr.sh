@@ -3,8 +3,8 @@
 #
 #   ./ocr.sh <pdf-dir> [lang]           # lang: eng (default), tur, "eng+tur"
 #
-# The original files are NOT TOUCHED. Output: <dizin>/_ocr/<ad>.pdf (<directory>/_ocr/<name>.pdf)
-# Then: python -m tbmcp.ingest <dizin>/_ocr --db corpus.sqlite
+# The original files are NOT TOUCHED. Output: <pdf-dir>/_ocr/<name>.pdf
+# Then: python -m tbmcp.ingest <pdf-dir>/_ocr --db corpus.sqlite
 set -euo pipefail
 
 SRC="${1:?usage: ./ocr.sh <pdf-dir> [lang]}"

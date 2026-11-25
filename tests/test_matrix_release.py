@@ -69,7 +69,7 @@ class MatrisBirakma(unittest.TestCase):
         del ids, mat
         sonra = self._bekle_ve_olc()
         # Blocks released by earlier allocations and kept by the allocator can be reused, so
-        # the increase relative to "once" is not reliable; what is measured is how much deletion gives back.
+        # the increase relative to `once` is not reliable; what is measured is how much deletion gives back.
         self.assertGreater(dolu - sonra, 0.8 * BOYUT_MB, f"before {once:.0f}, loaded {dolu:.0f}, after {sonra:.0f}")
 
     def test_alt_kume_unload_ile_bellek_doner(self):

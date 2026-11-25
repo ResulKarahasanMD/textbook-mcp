@@ -64,7 +64,7 @@ in a different language from the books). To ingest notes into the second collect
 .venv/bin/python -m tbmcp.ingest /not/dizini --db corpus.sqlite --collection notes --lang tr
 ```
 
-The book ID (slug) is derived from the file name. If the file names carry a fixed suffix or tail, remove it
+The book ID (slug) is derived from the file name. If the file names carry a fixed suffix or trailing text, remove it
 before slugging with `--strip-name=REGEX` (repeatable; if the expression starts with `-`, the `=` form is required):
 
 ```sh
@@ -139,7 +139,7 @@ Claude Code skill (not included in this repository).
 | Step | Measurement |
 |---|---|
 | PDF text extraction | 20 pages/s (disk-bound) → 43 books ~2.5 hours |
-| OCR | not needed (43 of the 43 books have a text layer) |
+| OCR | not needed (all 43 books have a text layer) |
 | FTS5 index | ~1 min |
 | Embedding (bge-m3, fp16, seq512, batch 32) | 13-18 chunks/s → ~8-10 hours, one-time |
 | BM25 query | 1 ms |
@@ -162,7 +162,7 @@ the measurement script and raw outputs are not in this repository):
 | Whole textbook collection (`textbook_search`) | 8872 MB | 5681 MB | 8950 → 6884 MB |
 | Lecture notes collection (`textbook_notes_search`) | 8876 MB | 3275 MB | 8952 → 4383 MB |
 
-In 15 of 15 queries the result IDs and scores are identical to the old code. Changes:
+In all 15 queries the result IDs and scores are identical to the old code. Changes:
 
 - **Models are moved to the device in fp16, tensor by tensor** (`embed.move_fp16`). Loading in fp32 on the
   device and calling `.half()` wasted ~1.1 GB per model on MPS (fp16 tensors in fp32-sized
@@ -177,9 +177,9 @@ In 15 of 15 queries the result IDs and scores are identical to the old code. Cha
   large blocks (a deleted 2.3 GB stayed in the footprint); freeing via mmap actually
   returns it. Scoring also uses a fixed 8 MB buffer instead of 268 MB temporaries.
 
-Known residue: after idle unloading the process stays at 390–980 MB (old code 373–944 MB).
+Known limitation (residual memory): after idle unloading the process stays at 390–980 MB (old code 373–944 MB).
 The difference comes from small/medium blocks (MALLOC_SMALL) allocated and released while the models load
-staying in the allocator; `malloc_zone_pressure_relief` does not reclaim them. Getting it to zero would require
+staying in the allocator; `malloc_zone_pressure_relief` does not reclaim them. Eliminating it would require
 running the models in a subprocess.
 
 Tests: `.venv/bin/python -m unittest discover -s tests -t .` (no models required);
@@ -192,7 +192,7 @@ for the GPU memory tests, prefix with `TEXTBOOK_GPU_TESTS=1` (~20 s, loads both 
 - **Turkish queries do not work until the vectors are ready.** BM25 is lexical: the query "preeklampside
   magnezyum sulfat dozu" (magnesium sulfate dose in preeclampsia) returns zero results against English text.
   Cross-lingual search becomes available once the dense layer is complete. Until then, write your queries in English.
-- `page` is everywhere the **PDF page number**, not the book's printed page number.
+- `page` always means the **PDF page number**, not the book's printed page number.
   (The `books.page_offset` field is reserved for this but not used yet.)
 - The table of contents comes from PDF bookmarks; for a book without bookmarks `textbook_toc` returns nothing.
 - A textbook ≠ a current guideline. For treatment recommendations, check the edition year and
