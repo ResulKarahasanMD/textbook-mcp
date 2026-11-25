@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""textbook-mcp — yerel tip ders kitabi korpusu icin MCP sunucusu (stdio).
+"""textbook-mcp — MCP server for a local medical textbook corpus (stdio).
 
-Ortam degiskenleri:
-    TEXTBOOK_DB       corpus.sqlite yolu (zorunlu degil, varsayilan ./corpus.sqlite)
-    TEXTBOOK_DENSE    0 ise yalniz BM25 (model yuklenmez, hizli ve hafif)
-    TEXTBOOK_RERANK   0 ise cross-encoder devre disi
-    TEXTBOOK_WARMUP   1 ise modeller+matris ACILISTA isitilir (varsayilan: tembel)
-    TEXTBOOK_IDLE_UNLOAD  N saniye istek gelmezse modeller+matris bellekten
-                      dusurulur (varsayilan 60; 0 = kapali). Surec YASAR,
-                      stdio baglantisi kopmaz; bedel sonraki sorguda yeniden yukleme.
+Environment variables:
+    TEXTBOOK_DB       path to corpus.sqlite (optional, default ./corpus.sqlite)
+    TEXTBOOK_DENSE    0 = BM25 only (no model is loaded; fast and light)
+    TEXTBOOK_RERANK   0 = cross-encoder disabled
+    TEXTBOOK_WARMUP   1 = models + matrix are warmed up AT STARTUP (default: lazy)
+    TEXTBOOK_IDLE_UNLOAD  if no request arrives for N seconds, the models + matrix are
+                      dropped from memory (default 60; 0 = off). The process STAYS ALIVE
+                      and the stdio connection is kept; the cost is a reload on the next query.
 
-Tasarim: sunucu YALNIZ arama ve getirme yapar. Sentezi/yorumu cagiran model
-(Claude) yapar — DynaMed MCP ile ayni bolusum.
+Design: the server ONLY searches and retrieves. Synthesis/interpretation is done by the
+calling model (Claude) — the same division of labor as the DynaMed MCP.
 """
 from __future__ import annotations
 
@@ -140,10 +140,10 @@ def _book_id(slug: str) -> tuple[int, str, int]:
 @mcp.tool()
 @_tracked
 def textbook_list_books() -> str:
-    """Korpustaki tum ders kitaplarini listele (slug, baslik, sayfa sayisi).
+    """List all textbooks in the corpus (slug, title, page count).
 
-    Diger araclarin `book` parametresi buradaki `slug` degerini bekler.
-    Bir soruyu yanitlamadan once korpusta hangi kaynaklarin oldugunu gormek icin kullan.
+    The `book` parameter of the other tools expects the `slug` value shown here.
+    Use it to see which sources the corpus contains before answering a question.
     """
     rows = db().execute(
         "SELECT b.slug,b.title,b.n_pages,COUNT(c.id),b.scanned,b.collection,b.lang"
@@ -166,27 +166,27 @@ def textbook_list_books() -> str:
 @mcp.tool()
 @_tracked
 def textbook_search(query: str, book: str = "", top_k: int = 8) -> str:
-    """Ders kitaplarinda hibrit arama (BM25 + anlamsal + yeniden siralama).
+    """Hybrid search across the textbooks (BM25 + semantic + reranking).
 
-    Klinik sorularin ilk adimi budur. Sorguyu kitaplarin diliyle (cogu korpusta
-    Ingilizce tibbi terimlerle) yaz. Baska dilde sorgu yalniz anlamsal katman
-    acikken calisir — once textbook_corpus_info ile dense_acik degerine bak;
-    false ise sorgu kitaplarin dilinde olmak ZORUNDA.
+    This is the first step for clinical questions. Write the query in the language of
+    the books (in most corpora, English medical terms). A query in another language
+    only works while the semantic layer is on — first check the dense_acik value with
+    textbook_corpus_info; if it is false, the query MUST be in the language of the books.
 
-    KAPSAM: yalniz 'textbook' koleksiyonu. Ders notlari ('notes' koleksiyonu)
-    icin textbook_notes_search kullan — bu arac onlari DONDURMEZ.
-    Kilit bilincli: olculdu, notlarin dilindeki bir sorguda not parcalari BM25
-    uzerinden 30'luk aday havuzuna girip yuksek skorlu bir ders kitabi parcasini
-    reranker'a hic ulastirmadan disari itebiliyordu. Iki koleksiyon ayri
-    arandiginda ikisi de tam geri cagriliyor.
+    SCOPE: only the 'textbook' collection. For lecture notes (the 'notes' collection)
+    use textbook_notes_search — this tool does NOT return them.
+    The lock is deliberate: measured, for a query in the notes' language, note chunks
+    entered the 30-candidate pool through BM25 and could push a high-scoring textbook
+    chunk out before it ever reached the reranker. When the two collections are
+    searched separately, both get full recall.
 
     Args:
-        query: Aranacak ifade, orn. "diabetic ketoacidosis insulin infusion rate"
-        book:  Tek bir kitapla sinirlamak icin slug (bos = tum ders kitabi korpusu)
-        top_k: Dondurulecek parca sayisi (varsayilan 8)
+        query: Search phrase, e.g. "diabetic ketoacidosis insulin infusion rate"
+        book:  Slug to restrict the search to a single book (empty = the whole textbook corpus)
+        top_k: Number of chunks to return (default 8)
 
-    Doner: her biri [kitap s.N] kunyeli metin parcalari. Kunyeyi cevabinda
-    aynen aktar; tam baglam icin textbook_get_page ile sayfayi ac.
+    Returns: text chunks, each with a [book s.N] citation. Carry the citation over
+    verbatim in your answer; open the page with textbook_get_page for full context.
     """
     hits = S.search(db(), query, top_k=max(1, min(top_k, 25)),
                     book=book or None, dense=USE_DENSE, use_rerank=USE_RERANK,
@@ -214,25 +214,25 @@ def _fmt_hits(hits, query: str, bos_ipucu: str = "") -> str:
 @mcp.tool()
 @_tracked
 def textbook_notes_search(query: str, book: str = "", top_k: int = 8) -> str:
-    """Ders notlarinda ('notes' koleksiyonu) arama yap.
+    """Search the lecture notes (the 'notes' collection).
 
-    Ders notlarinin dilinde sorulan bir soru icin BUNU kullan; ders kitaplari
-    icin textbook_search kullan. Ikisi AYRI kaynaklardir ve birbirinin sonucunu
-    dondurmez; kapsamli bir yanit icin ikisini de cagirabilirsin.
+    Use THIS for a question asked in the language of the lecture notes; for the
+    textbooks use textbook_search. The two are SEPARATE sources and do not return
+    each other's results; for a thorough answer you can call both.
 
-    Neden ayri arac: olculdu — ders kitabi korpusu onlarca kat buyuk oldugu ve
-    ayni-dil eslesmesi capraz-dil eslesmesinden yuksek skorladigi icin, tek
-    havuzda arandiginda not parcalari kendi dillerindeki sorgularda bile yuzeye
-    cikamiyor.
+    Why a separate tool: measured — because the textbook corpus is tens of times
+    larger and same-language matches score higher than cross-language ones, note
+    chunks searched in a single pool could not surface even for queries in their
+    own language.
 
     Args:
-        query: Notlarin dilinde ifade, orn. "diyabetik ketoasidoz insulin dozu"
-        book:  Tek bir not dosyasiyla sinirlamak icin slug (textbook_list_books ile gor)
-        top_k: Dondurulecek parca sayisi (varsayilan 8)
+        query: Phrase in the language of the notes, e.g. "diyabetik ketoasidoz insulin dozu"
+        book:  Slug to restrict the search to a single notes file (see textbook_list_books)
+        top_k: Number of chunks to return (default 8)
 
-    Doner: [not s.N] kunyeli metin parcalari. Tablolar metin katmaninda
-    bozulabilir — sayilar sutun sutun bozuk gorunuyorsa ayni sayfa icin
-    textbook_page_image cagir.
+    Returns: text chunks with a [note s.N] citation. Tables can be garbled in the
+    text layer — if the numbers look scrambled column by column, call
+    textbook_page_image for the same page.
     """
     hits = S.search(db(), query, top_k=max(1, min(top_k, 25)),
                     book=book or None, dense=USE_DENSE, use_rerank=USE_RERANK,
@@ -245,15 +245,15 @@ def textbook_notes_search(query: str, book: str = "", top_k: int = 8) -> str:
 @mcp.tool()
 @_tracked
 def textbook_get_page(book: str, page: int, window: int = 1) -> str:
-    """Bir kitabin belirli sayfasini (ve komsularini) tam metin olarak getir.
+    """Return a specific page of a book (and its neighbors) as full text.
 
-    textbook_search bir parca dondurdukten sonra, kesilmis baglami tamamlamak
-    icin kullan. window=1 onceki ve sonraki sayfayi da getirir.
+    Use it after textbook_search returns a chunk, to complete the truncated
+    context. window=1 also returns the previous and the next page.
 
     Args:
-        book:   kitap slug'i
-        page:   PDF sayfa numarasi (arama sonuclarindaki s.N degeri)
-        window: kac komsu sayfa (0-5)
+        book:   book slug
+        page:   PDF page number (the s.N value in search results)
+        window: how many neighboring pages (0-5)
     """
     bid, title, n_pages = _book_id(book)
     if not 1 <= page <= n_pages:
@@ -280,8 +280,8 @@ def textbook_get_page(book: str, page: int, window: int = 1) -> str:
 @mcp.tool()
 @_tracked
 def textbook_find_in_book(book: str, query: str, top_k: int = 10) -> str:
-    """Tek bir kitabin icinde ara. Bir kaynagin belirli bir konuda ne dedigini
-    ogrenmek veya kitaplari karsilastirmak icin kullan.
+    """Search within a single book. Use it to learn what one source says about a
+    particular topic, or to compare books.
     """
     return textbook_search(query=query, book=book, top_k=top_k)
 
@@ -289,12 +289,12 @@ def textbook_find_in_book(book: str, query: str, top_k: int = 10) -> str:
 @mcp.tool()
 @_tracked
 def textbook_toc(book: str, depth: int = 2, contains: str = "") -> str:
-    """Bir kitabin icindekiler agacini getir (PDF yer imlerinden).
+    """Return a book's table of contents tree (from the PDF bookmarks).
 
     Args:
-        book:     kitap slug'i
-        depth:    kac seviye derine inilsin (1-6)
-        contains: yalniz bu ifadeyi iceren basliklar (bos = hepsi)
+        book:     book slug
+        depth:    how many levels deep to go (1-6)
+        contains: only headings containing this phrase (empty = all)
     """
     bid, title, _ = _book_id(book)
     sql = "SELECT level,title,page FROM toc WHERE book_id=? AND level<=?"
@@ -313,13 +313,13 @@ def textbook_toc(book: str, depth: int = 2, contains: str = "") -> str:
 @mcp.tool()
 @_tracked
 def textbook_page_image(book: str, page: int, dpi: int = 150) -> Image:
-    """Bir sayfayi GORUNTU olarak getir. Tablo, akis semasi, algoritma ve sekiller
-    icin kullan — bunlar duz metne cevrildiginde bozulur.
+    """Return a page as an IMAGE. Use it for tables, flowcharts, algorithms and figures
+    — these get garbled when converted to plain text.
 
     Args:
-        book: kitap slug'i
-        page: PDF sayfa numarasi
-        dpi:  cozunurluk (72-200)
+        book: book slug
+        page: PDF page number
+        dpi:  resolution (72-200)
     """
     import pymupdf
     row = db().execute("SELECT path, n_pages, sha256 FROM books WHERE slug=?",
@@ -363,7 +363,7 @@ def textbook_page_image(book: str, page: int, dpi: int = 150) -> Image:
 @mcp.tool()
 @_tracked
 def textbook_corpus_info() -> str:
-    """Korpusun durumu: kitap/parca sayisi, vektor katmani hazir mi, hangi model."""
+    """Corpus status: book/chunk counts, whether the vector layer is ready, which model."""
     c = db()
     n_books, n_chunks, n_pages, n_vec = (
         c.execute("SELECT COUNT(*) FROM books").fetchone()[0],
