@@ -1,0 +1,29 @@
+[project]
+name = "textbook-mcp"
+version = "0.1.0"
+description = "Yerel PDF ders kitabi korpusu icin MCP sunucusu (hibrit arama + rerank)"
+requires-python = ">=3.12"
+license = "MIT"
+readme = "README.md"
+dependencies = [
+    "mcp",
+    "pymupdf",
+    "numpy",
+]
+
+[project.optional-dependencies]
+# Anlamsal katman. Bunlar olmadan sunucu yalniz BM25 ile calisir.
+dense = [
+    "sentence-transformers>=3",
+    "torch",
+]
+
+[project.scripts]
+textbook-mcp = "tbmcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tbmcp"]

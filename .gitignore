@@ -1,0 +1,36 @@
+# Korpus ve turevleri — 6,4 GiB. Asla commit'lenmez; ingest'ten yeniden uretilir.
+corpus.sqlite
+corpus.sqlite-wal
+corpus.sqlite-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Ara ciktilar (chunks.jsonl.gz ~138 MB) — ingest urunu, kaynak degil.
+*.jsonl
+*.jsonl.gz
+
+# Yedekler
+*.yedek-*
+*.bak
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+
+# Modeller (HF onbellegi buraya dusebilir)
+models/
+*.safetensors
+*.bin
+
+# macOS
+.DS_Store
+
+# Uretilen raporlar/loglar
+*.log
+saglik-raporu-*.md
