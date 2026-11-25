@@ -25,11 +25,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pdf", required=True)
     ap.add_argument("--txt", required=True)
-    ap.add_argument("--toc", default=None, help="fitz get_toc() json dokumu")
+    ap.add_argument("--toc", default=None, help="fitz get_toc() json dump")
     ap.add_argument("--title", default=None)
     ap.add_argument("--slug", default=None,
-                    help="acik slug; verilmezse pdf adindan turetilir "
-                         "(dosya adindaki ekler slug'a sizmasin diye acik verilebilir)")
+                    help="explicit slug; if omitted it is derived from the pdf name "
+                         "(can be given explicitly so suffixes in the file name don't leak into the slug)")
     ap.add_argument("--collection", default="textbook", help="'textbook' | 'notes'")
     ap.add_argument("--lang", default="en")
     ap.add_argument("--db", default=str(ROOT / "corpus.sqlite"))
@@ -52,11 +52,11 @@ def main() -> int:
 
     con = connect(a.db)
     if con.execute("SELECT 1 FROM books WHERE path=?", (str(pdf),)).fetchone():
-        print(f"zaten var: {pdf}"); return 0
+        print(f"already present: {pdf}"); return 0
     taken = {r[0] for r in con.execute("SELECT slug FROM books")}
     slug = a.slug or slugify(pdf.stem, taken)
     if slug in taken:
-        print(f"slug zaten kullanimda: {slug}"); return 1
+        print(f"slug already in use: {slug}"); return 1
     title = a.title or pdf.stem
     meta = {"extractor": "poppler-pdftotext"}
     if a.collection == "textbook":
@@ -84,7 +84,7 @@ def main() -> int:
         " SELECT id,text,section FROM chunks WHERE book_id=?", (book_id,))
     cur.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('ingested_at',datetime('now'))")
     con.commit()
-    print(f"{slug}: {n_pages} sayfa, {len(rows)} parca, {cpp} kar/sayfa, "
+    print(f"{slug}: {n_pages} pages, {len(rows)} chunks, {cpp} chars/page, "
           f"toc {len(toc)}, [{a.collection}/{a.lang}]")
     return 0
 

@@ -197,7 +197,7 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--model", default=MODEL)
-    ap.add_argument("--limit", type=int, default=0, help="test icin: ilk N parca")
+    ap.add_argument("--limit", type=int, default=0, help="for testing: the first N chunks")
     args = ap.parse_args()
 
     con = sqlite3.connect(args.db)
@@ -208,12 +208,12 @@ def main() -> int:
         + (f" LIMIT {args.limit}" if args.limit else "")
     ).fetchall()
     if not todo:
-        print("eksik vektor yok.")
+        print("no missing vectors.")
         con.close()
         return 0
 
     device = get_device(args.device)
-    print(f"{len(todo)} parca, model={args.model}, cihaz={device}", flush=True)
+    print(f"{len(todo)} chunks, model={args.model}, device={device}", flush=True)
     t0 = time.time()
     done = 0
     STEP = args.batch * 16
@@ -228,7 +228,7 @@ def main() -> int:
         dt = time.time() - t0
         rate = done / dt
         eta = (len(todo) - done) / rate / 60
-        print(f"  {done}/{len(todo)}  {rate:.1f} parca/sn  kalan ~{eta:.0f} dk",
+        print(f"  {done}/{len(todo)}  {rate:.1f} chunks/s  ~{eta:.0f} min left",
               file=sys.stderr, flush=True)
 
     con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('embed_model',?)",
@@ -237,7 +237,7 @@ def main() -> int:
     # Closing checkpoints the WAL; better to pay for it here, at a measurable point,
     # than during unpredictable finalization.
     con.close()
-    print(f"bitti: {done} vektor, {time.time()-t0:.0f} sn")
+    print(f"done: {done} vectors, {time.time()-t0:.0f} s")
     return 0
 
 

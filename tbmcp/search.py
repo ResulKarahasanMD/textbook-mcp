@@ -480,7 +480,7 @@ def _search(con: sqlite3.Connection, query: str, top_k: int,
                 rankings["dense"] = d
         except Exception as e:                      # model missing / not downloaded
             rankings.setdefault("_warn", [])
-            print(f"[dense atlandi: {e}]", file=sys.stderr, flush=True)
+            print(f"[dense skipped: {e}]", file=sys.stderr, flush=True)
 
     hits = hydrate(con, rrf({k: v for k, v in rankings.items() if v})[:candidates])
     # Drop exact duplicates (same text in the same book — e.g. repeated pages)
@@ -504,7 +504,7 @@ def _search(con: sqlite3.Connection, query: str, top_k: int,
                 h.why = h.why + ["ref-fill"]   # RRF-scored filler, not a CE score
             return ranked + fill
         except Exception as e:
-            print(f"[rerank atlandi: {e}]", file=sys.stderr, flush=True)
+            print(f"[rerank skipped: {e}]", file=sys.stderr, flush=True)
     return hits[:top_k]
 
 

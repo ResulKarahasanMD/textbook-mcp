@@ -104,7 +104,7 @@ def db() -> sqlite3.Connection:
                 p = Path(DB_PATH).expanduser()
                 if not p.exists():
                     raise ToolError(
-                        f"Korpus bulunamadi: {p}. Once `python -m tbmcp.ingest` calistir.")
+                        f"Corpus not found: {p}. Run `python -m tbmcp.ingest` first.")
                 # READ-ONLY: the server never writes; it must not race for locks with
                 # an embed job writing to the same file concurrently.
                 _con = sqlite3.connect(f"file:{p}?mode=ro", uri=True,
@@ -132,7 +132,7 @@ def _book_id(slug: str) -> tuple[int, str, int]:
         "SELECT id,title,n_pages FROM books WHERE slug=?", (slug,)).fetchone()
     if not row:
         known = [r[0] for r in db().execute("SELECT slug FROM books LIMIT 10")]
-        raise ToolError(f"Bilinmeyen kitap: {slug!r}. Ornekler: {known}")
+        raise ToolError(f"Unknown book: {slug!r}. Examples: {known}")
     return row
 
 
@@ -150,16 +150,16 @@ def textbook_list_books() -> str:
         " FROM books b LEFT JOIN chunks c ON c.book_id=b.id"
         " GROUP BY b.id ORDER BY b.collection, b.title").fetchall()
     if not rows:
-        return "Korpus bos."
-    out = [f"{len(rows)} kitap:\n"]
+        return "The corpus is empty."
+    out = [f"{len(rows)} books:\n"]
     cur = None
     for slug, title, pages, n, scanned, coll, lang in rows:
         if coll != cur:
             cur = coll
             kac = sum(1 for r in rows if r[5] == coll)
-            out.append(f"\n== koleksiyon: {coll} ({lang}) — {kac} kaynak ==")
-        flag = "  [TARANMIS/OCR yok]" if scanned else ""
-        out.append(f"- {slug}\n    {title}\n    {pages} sayfa, {n} parca{flag}")
+            out.append(f"\n== collection: {coll} ({lang}) — {kac} sources ==")
+        flag = "  [SCANNED/no OCR]" if scanned else ""
+        out.append(f"- {slug}\n    {title}\n    {pages} pages, {n} chunks{flag}")
     return "\n".join(out)
 
 
@@ -192,16 +192,16 @@ def textbook_search(query: str, book: str = "", top_k: int = 8) -> str:
                     book=book or None, dense=USE_DENSE, use_rerank=USE_RERANK,
                     collection="textbook")
     return _fmt_hits(hits, query,
-                     "Ders kitaplarinda bulunamadi; ders notlari icin "
-                     "textbook_notes_search dene.")
+                     "Not found in the textbooks; for the lecture notes "
+                     "try textbook_notes_search.")
 
 
 def _fmt_hits(hits, query: str, bos_ipucu: str = "") -> str:
     """Format search results as cited text (shared by textbook_search and textbook_notes_search)."""
     if not hits:
-        return (f"'{query}' icin korpusta sonuc yok. "
-                + (bos_ipucu or "Terimi degistirip tekrar dene veya "
-                                "textbook_list_books ile kapsami gor."))
+        return (f"No results in the corpus for '{query}'. "
+                + (bos_ipucu or "Change the term and try again, or "
+                                "see the coverage with textbook_list_books."))
     out = []
     for i, h in enumerate(hits, 1):
         head = f"{i}. {h.cite()}  skor={h.score:.3f}"
@@ -238,8 +238,8 @@ def textbook_notes_search(query: str, book: str = "", top_k: int = 8) -> str:
                     book=book or None, dense=USE_DENSE, use_rerank=USE_RERANK,
                     collection="notes")
     return _fmt_hits(hits, query,
-                     "Ders notlarinda bulunamadi; ders kitaplari icin "
-                     "textbook_search dene.")
+                     "Not found in the lecture notes; for the textbooks "
+                     "try textbook_search.")
 
 
 @mcp.tool()
@@ -257,22 +257,22 @@ def textbook_get_page(book: str, page: int, window: int = 1) -> str:
     """
     bid, title, n_pages = _book_id(book)
     if not 1 <= page <= n_pages:
-        raise ToolError(f"{book} {n_pages} sayfa; s.{page} yok.")
+        raise ToolError(f"{book} has {n_pages} pages; there is no s.{page}.")
     window = max(0, min(window, 5))
     lo, hi = max(1, page - window), min(n_pages, page + window)
     rows = db().execute(
         "SELECT page,text FROM pages WHERE book_id=? AND page BETWEEN ? AND ?"
         " ORDER BY page", (bid, lo, hi)).fetchall()
     if not rows:
-        return f"{book} s.{page} bos veya yok (kitap {n_pages} sayfa)."
+        return f"{book} s.{page} is empty or missing (the book has {n_pages} pages)."
     parts = [f"# {title}"]
     total = 0
     for p, txt in rows:
-        seg = f"\n----- [{book} s.{p}] -----\n{txt or '(bos sayfa)'}"
+        seg = f"\n----- [{book} s.{p}] -----\n{txt or '(empty page)'}"
         total += len(seg)
         parts.append(seg)
         if total > 60_000:        # ~15k token cap: 11 huge pages must not bloat the context
-            parts.append(f"\n[kirpildi — kalan sayfalar icin window'u kucult]")
+            parts.append(f"\n[truncated — reduce window to see the remaining pages]")
             break
     return "\n".join(parts)
 
@@ -305,7 +305,7 @@ def textbook_toc(book: str, depth: int = 2, contains: str = "") -> str:
     sql += " ORDER BY page,level LIMIT 800"
     rows = db().execute(sql, params).fetchall()
     if not rows:
-        return f"{book}: PDF yer imi yok. textbook_search ile ara."
+        return f"{book}: no PDF bookmarks. Search with textbook_search."
     return f"# {title}\n" + "\n".join(
         f"{'  ' * (lvl - 1)}{t.strip()}  ....  s.{pg}" for lvl, t, pg in rows)
 
@@ -325,16 +325,16 @@ def textbook_page_image(book: str, page: int, dpi: int = 150) -> Image:
     row = db().execute("SELECT path, n_pages, sha256 FROM books WHERE slug=?",
                        (book,)).fetchone()
     if not row:
-        raise ToolError(f"Bilinmeyen kitap: {book!r}")
+        raise ToolError(f"Unknown book: {book!r}")
     path, n_pages, sha = row
     if not os.path.isabs(path):
         # A relative path would resolve against the server's cwd, and the cwd is deliberately
         # unspecified (see the DB_PATH note) — stop rather than silently open the wrong file.
-        raise ToolError(f"{book}: books.path goreli ({path!r}); mutlak yola cevrilmeli.")
+        raise ToolError(f"{book}: books.path is relative ({path!r}); it must be made absolute.")
     try:
         doc = pymupdf.open(path)
     except Exception:
-        raise ToolError(f"PDF acilamadi (tasinmis olabilir): {path}")
+        raise ToolError(f"Could not open the PDF (it may have been moved): {path}")
     with doc:
         # If the path stays the same but the file is replaced with ANOTHER edition, page
         # numbers shift and the tool would silently show the wrong page. The page count is a
@@ -342,11 +342,11 @@ def textbook_page_image(book: str, page: int, dpi: int = 150) -> Image:
         # always has a different page count. For exact verification there is books.sha256.
         if n_pages and doc.page_count != n_pages:
             raise ToolError(
-                f"{book}: PDF {doc.page_count} sayfa, korpus {n_pages} bekliyor — "
-                f"dosya degismis olabilir (farkli baski?). Dogrula: "
-                f"shasum -a 256 {path!r}  ->  beklenen {sha or '(kayitli degil)'}")
+                f"{book}: the PDF has {doc.page_count} pages, the corpus expects {n_pages} — "
+                f"the file may have changed (a different edition?). Verify: "
+                f"shasum -a 256 {path!r}  ->  expected {sha or '(not recorded)'}")
         if not 1 <= page <= doc.page_count:
-            raise ToolError(f"{book} {doc.page_count} sayfa; s.{page} yok.")
+            raise ToolError(f"{book} has {doc.page_count} pages; there is no s.{page}.")
         # Cap the long edge at 1568 px: the API downscales anything above 1568 anyway,
         # and the excess is bandwidth that never reaches the model. A large-format page at
         # 200 dpi produced a 6+ MB PNG; the cap + JPEG fallback brings the worst case under ~1 MB.
@@ -411,7 +411,7 @@ def _warmup() -> None:
         if USE_RERANK:
             S.rerank("warmup", [S.Hit(0, "w", "w", 1, 1, "", "warmup text")], 1)
     except Exception as e:                      # a warmup error is not fatal
-        logging.warning("isitma atlandi: %s", e)
+        logging.warning("warmup skipped: %s", e)
 
 
 def _idle_watchdog() -> None:
@@ -428,9 +428,9 @@ def _idle_watchdog() -> None:
         if busy == 0 and idle >= IDLE_UNLOAD:
             try:
                 if S.unload():
-                    logging.warning("bosta %.0f sn -> modeller bellekten dusuruldu", idle)
+                    logging.warning("idle %.0f s -> models dropped from memory", idle)
             except Exception as e:                  # an unload error is not fatal
-                logging.warning("bosta bosaltma basarisiz: %s", e)
+                logging.warning("idle unload failed: %s", e)
             time.sleep(min(IDLE_UNLOAD, 30))
         else:
             time.sleep(max(1.0, IDLE_UNLOAD - idle))

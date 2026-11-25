@@ -106,7 +106,7 @@ claude mcp add textbook --scope user \
 ```
 
 If the vectors are not ready yet, start with `TEXTBOOK_DENSE=0`; once `durum.sh` (embedding status) reports
-`BITTI` ("done"), first run `scripts/fix_sections.py`, then re-register with `DENSE=1`.
+`DONE`, first run `scripts/fix_sections.py`, then re-register with `DENSE=1`.
 
 Recommended workflow: search → open the page → cite with the page number. You can enforce this with a
 Claude Code skill (not included in this repository).

@@ -31,7 +31,7 @@ def ayak_izi_mb() -> float:
     return float(sayi) * {"B": 1 / 1048576, "KB": 1 / 1024, "MB": 1, "GB": 1024}[birim]
 
 
-@unittest.skipUnless(os.path.exists("/usr/bin/footprint"), "yalniz macOS")
+@unittest.skipUnless(os.path.exists("/usr/bin/footprint"), "macOS only")
 class MatrisBirakma(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -70,7 +70,7 @@ class MatrisBirakma(unittest.TestCase):
         sonra = self._bekle_ve_olc()
         # Blocks released by earlier allocations and kept by the allocator can be reused, so
         # the increase relative to "once" is not reliable; what is measured is how much deletion gives back.
-        self.assertGreater(dolu - sonra, 0.8 * BOYUT_MB, f"once {once:.0f}, dolu {dolu:.0f}, sonra {sonra:.0f}")
+        self.assertGreater(dolu - sonra, 0.8 * BOYUT_MB, f"before {once:.0f}, loaded {dolu:.0f}, after {sonra:.0f}")
 
     def test_alt_kume_unload_ile_bellek_doner(self):
         S.unload()
@@ -79,7 +79,7 @@ class MatrisBirakma(unittest.TestCase):
         dolu = ayak_izi_mb()
         S.unload()
         sonra = self._bekle_ve_olc()
-        self.assertGreater(dolu - sonra, 0.8 * BOYUT_MB, f"once {once:.0f}, dolu {dolu:.0f}, sonra {sonra:.0f}")
+        self.assertGreater(dolu - sonra, 0.8 * BOYUT_MB, f"before {once:.0f}, loaded {dolu:.0f}, after {sonra:.0f}")
 
 
 if __name__ == "__main__":

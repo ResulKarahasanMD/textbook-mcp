@@ -20,13 +20,13 @@ if alive and v0 < n:
         if v1 > v0:
             rate = (v1 - v0) / (time.time() - t0)
             break
-print(f"vektor {v0:,}/{n:,}  (%{100*v0/n:.1f})   surec: {'calisiyor' if alive else 'DURMUS'}")
+print(f"vectors {v0:,}/{n:,}  ({100*v0/n:.1f}%)   process: {'running' if alive else 'STOPPED'}")
 if v0 >= n:
-    print("BITTI -> 1) scripts/fix_sections.py calistir  2) TEXTBOOK_DENSE=1 yap")
+    print("DONE -> 1) run scripts/fix_sections.py  2) set TEXTBOOK_DENSE=1")
 elif alive and rate > 0:
-    print(f"olculen hiz {rate:.1f} parca/sn -> ~{(n-v0)/rate/3600:.1f} saat kaldi")
+    print(f"measured rate {rate:.1f} chunks/s -> ~{(n-v0)/rate/3600:.1f} hours left")
 elif alive:
-    print("45 sn'de yeni vektor gelmedi — is takilmis olabilir, embed.log'a bak")
+    print("no new vectors in 45 s — the job may be stuck, check embed.log")
 else:
-    print("surdurmek icin: .venv/bin/python -m tbmcp.embed --db corpus.sqlite")
+    print("to resume: .venv/bin/python -m tbmcp.embed --db corpus.sqlite")
 PY

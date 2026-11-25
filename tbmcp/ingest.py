@@ -280,25 +280,25 @@ def rebuild_fts(con: sqlite3.Connection) -> None:
 # ------------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("src", nargs="+", help="PDF dosyasi veya dizini")
+    ap.add_argument("src", nargs="+", help="PDF file or directory")
     ap.add_argument("--db", default="corpus.sqlite")
     ap.add_argument("--probe", action="store_true",
-                    help="yalniz rapor: hangi kitap taranmis, OCR maliyeti ne")
+                    help="report only: which books are scanned, what OCR would cost")
     ap.add_argument("--rebuild-fts", action="store_true",
-                    help="FTS indeksini sifirdan kur (onarim; normalde gerekmez)")
+                    help="rebuild the FTS index from scratch (repair; normally not needed)")
     ap.add_argument("--collection", default="textbook", choices=("textbook", "notes"),
-                    help="'textbook' (varsayilan) ya da 'notes' (ders notlari; ayri aranir)")
-    ap.add_argument("--lang", default="en", help="koleksiyonun dili, orn. en, tr (varsayilan en)")
+                    help="'textbook' (default) or 'notes' (lecture notes; searched separately)")
+    ap.add_argument("--lang", default="en", help="language of the collection, e.g. en, tr (default en)")
     ap.add_argument("--strip-name", action="append", default=[], metavar="REGEX",
-                    help="slug uretilmeden once dosya adindan silinecek duzenli ifade "
-                         "(yinelenebilir), orn. --strip-name='_final$'. Ifade '-' ile "
-                         "basliyorsa '=' ile yazmak zorunludur: --strip-name='--\\s*kopya.*$'")
+                    help="regular expression to remove from the file name before slugging "
+                         "(repeatable), e.g. --strip-name='_final$'. If the expression starts "
+                         "with '-', the '=' form is required: --strip-name='--\\s*kopya.*$'")
     args = ap.parse_args()
     for pattern in args.strip_name:
         try:
             re.compile(pattern)
         except re.error as e:
-            ap.error(f"--strip-name gecersiz duzenli ifade {pattern!r}: {e}")
+            ap.error(f"--strip-name: invalid regular expression {pattern!r}: {e}")
 
     pdfs: list[Path] = []
     for s in args.src:
@@ -309,24 +309,24 @@ def main() -> int:
     pdfs = [p for p in pdfs if p.is_file()
             and (rp := str(p.resolve())) not in _seen and not _seen.add(rp)]
     if not pdfs:
-        print("PDF bulunamadi", file=sys.stderr)
+        print("no PDFs found", file=sys.stderr)
         return 1
 
     if args.probe:
-        print(f"{'kar/sf':>7} {'sayfa':>6}  durum     kitap")
+        print(f"{'chr/pg':>7} {'pages':>6}  state     book")
         scanned_pages = 0
         for p in pdfs:
             try:
                 info = probe(p)
             except Exception as e:
-                print(f"{'ERR':>7} {'-':>6}  hata      {p.name}  ({e})")
+                print(f"{'ERR':>7} {'-':>6}  error     {p.name}  ({e})")
                 continue
-            state = "TARANMIS" if info["scanned"] else "metin-ok"
+            state = "SCANNED" if info["scanned"] else "text-ok"
             if info["scanned"]:
                 scanned_pages += info["n_pages"]
             print(f"{info['chars_per_page']:>7} {info['n_pages']:>6}  {state:<9} {p.name[:70]}")
-        print(f"\n{len(pdfs)} PDF. OCR gereken sayfa: {scanned_pages}"
-              f"  (~{scanned_pages * 1.5 / 3600:.1f} saat @1.5 sn/sayfa)")
+        print(f"\n{len(pdfs)} PDFs. Pages needing OCR: {scanned_pages}"
+              f"  (~{scanned_pages * 1.5 / 3600:.1f} hours @1.5 s/page)")
         return 0
 
     con = connect(args.db)
@@ -337,16 +337,16 @@ def main() -> int:
     t0, n_chunks, n_books, skipped = time.time(), 0, 0, []
     for p in pdfs:
         if str(p.resolve()) in done:
-            print(f"  atlandi (zaten var): {p.name[:60]}")
+            print(f"  skipped (already present): {p.name[:60]}")
             continue
         try:
             info = probe(p)
         except Exception as e:
-            print(f"  HATA {p.name[:60]}: {e}", file=sys.stderr)
+            print(f"  ERROR {p.name[:60]}: {e}", file=sys.stderr)
             continue
         if info["scanned"]:
             skipped.append(p)
-            print(f"  TARANMIS, atlandi: {p.name[:60]} ({info['n_pages']} sayfa)")
+            print(f"  SCANNED, skipped: {p.name[:60]} ({info['n_pages']} pages)")
             continue
         slug = slugify(p.stem, taken, tuple(args.strip_name))
         try:
@@ -354,23 +354,23 @@ def main() -> int:
         except Exception as e:
             # A single broken PDF must not kill the run: roll back the partial transaction, continue.
             con.rollback()
-            print(f"  HATA {p.name[:60]}: {e} — atlandi", file=sys.stderr)
+            print(f"  ERROR {p.name[:60]}: {e} — skipped", file=sys.stderr)
             continue
         done.add(str(p.resolve()))
         n_chunks += c
         n_books += 1
-        print(f"  {slug:<40} {info['n_pages']:>5} sayfa  {c:>6} parca")
+        print(f"  {slug:<40} {info['n_pages']:>5} pages  {c:>6} chunks")
 
     if args.rebuild_fts:
-        print("FTS5 indeksi sifirdan kuruluyor...")
+        print("Rebuilding the FTS5 index from scratch...")
         con.rollback()          # don't enter the rebuild with a possibly partial transaction
         rebuild_fts(con)
     con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('ingested_at',datetime('now'))")
     con.commit()
     dt = time.time() - t0
-    print(f"\n{n_books} kitap, {n_chunks} parca, {dt:.1f} sn")
+    print(f"\n{n_books} books, {n_chunks} chunks, {dt:.1f} s")
     if skipped:
-        print(f"\nOCR bekleyen {len(skipped)} kitap (bkz. ocr.sh):")
+        print(f"\n{len(skipped)} books waiting for OCR (see ocr.sh):")
         for p in skipped:
             print(f"  {p}")
     return 0

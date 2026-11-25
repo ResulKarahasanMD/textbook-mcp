@@ -20,11 +20,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=str(__import__("pathlib").Path(__file__).resolve().parent.parent / "corpus.sqlite"))
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--force", action="store_true", help="kosan embed kontrolunu atla")
+    ap.add_argument("--force", action="store_true", help="skip the running-embed check")
     a = ap.parse_args()
 
     if not a.force and b"tbmcp.embed" in subprocess.run(["ps", "ax"], capture_output=True).stdout:
-        print("HATA: tbmcp.embed kosuyor. Once bitmesini bekle (durum.sh) veya --force.",
+        print("ERROR: tbmcp.embed is running. Wait for it to finish (durum.sh) or use --force.",
               file=sys.stderr)
         return 1
 
@@ -43,16 +43,16 @@ def main() -> int:
         if diff:
             books += 1
             updated += len(diff)
-            print(f"  {slug[:50]:<52} {len(diff):>6} parca duzeltilecek")
+            print(f"  {slug[:50]:<52} {len(diff):>6} chunks to fix")
             if not a.dry_run:
                 con.executemany("UPDATE chunks SET section=? WHERE id=?", diff)
                 con.commit()
-    print(f"\n{books} kitapta {updated} parca {'duzeltilirdi (dry-run)' if a.dry_run else 'duzeltildi'}")
+    print(f"\n{updated} chunks in {books} books {'would be fixed (dry-run)' if a.dry_run else 'fixed'}")
     if not a.dry_run and updated:
-        print("FTS indeksi yeniden kuruluyor (section indeksli — zorunlu)...")
+        print("Rebuilding the FTS index (section is indexed — required)...")
         con.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
         con.commit()
-        print(f"bitti: {time.time()-t0:.0f} sn")
+        print(f"done: {time.time()-t0:.0f} s")
     return 0
 
 

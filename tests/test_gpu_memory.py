@@ -14,13 +14,13 @@ from tests import fixture as F
 MB = 1048576
 
 
-@unittest.skipUnless(os.environ.get("TEXTBOOK_GPU_TESTS") == "1", "TEXTBOOK_GPU_TESTS=1 ile acilir")
+@unittest.skipUnless(os.environ.get("TEXTBOOK_GPU_TESTS") == "1", "enabled with TEXTBOOK_GPU_TESTS=1")
 class GpuBellek(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import torch
         if not torch.backends.mps.is_available():
-            raise unittest.SkipTest("MPS yok")
+            raise unittest.SkipTest("no MPS")
         from tbmcp import search as S
         cls.torch, cls.S = torch, S
         cls.con, cls.path = F.korpus(dim=1024)
