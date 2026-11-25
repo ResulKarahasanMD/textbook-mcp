@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Parcalari vektorlestir (bge-m3, yerel, MPS) ve corpus.sqlite icine yaz.
+"""Embed the chunks (bge-m3, local, MPS) and write them into corpus.sqlite.
 
-    python -m tbmcp.embed --db corpus.sqlite            # eksik olanlari isle
+    python -m tbmcp.embed --db corpus.sqlite            # process the missing ones
     python -m tbmcp.embed --db corpus.sqlite --batch 24
 
-bge-m3 cok dilli: Turkce sorulan soru Ingilizce kitap metnini bulabilir.
-Vektorler float16 olarak saklanir (yarim disk, kalite farki olculemez seviyede).
+bge-m3 is multilingual: a question asked in Turkish can find English textbook text.
+Vectors are stored as float16 (half the disk; the quality difference is not measurable).
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import time
 
 import numpy as np
 
-# Modeller zaten yerel; aksi halde her acilista Hub'a cikiyor (bkz. server.py).
+# The models are already local; otherwise every startup goes out to the Hub (see server.py).
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 MODEL = "BAAI/bge-m3"
@@ -39,18 +39,18 @@ _model_lock = __import__("threading").Lock()
 
 
 def move_fp16(module, device: str, block: int = 8_000_000) -> None:
-    """CPU'da (fp32) yuklenmis modulu cihaza fp16 olarak tasi; buyuk tensorleri parca parca.
+    """Move a module loaded on the CPU (fp32) to the device as fp16; large tensors piece by piece.
 
-    Eski yol (cihazda fp32 yukle, sonra .half()) 568 M parametrelik model basina 2773 MB
-    ayak izi birakiyordu: MPS ayiricisi fp16 tensorleri bosalan fp32 tamponlarina
-    yerlestiriyor (canli 1682 MiB, olmasi gereken 1083) ve 977 MiB'lik fp32 gomme
-    tamponunu empty_cache'te bile surucuye geri vermiyor. Tersi de olmuyor: tum modeli
-    CPU'da fp16'ya cevirip tasimak ayni bellegi CPU tarafinda birakiyor (2734 MB).
-    Tensor tensor tasiyinca fp32 cihaza hic cikmiyor: model basina 1683 MB (2026-09-30,
-    footprint ile olculdu; encode ciktisi 5 ondalikta ayni). fp32 -> fp16 donusumu tek bir
-    `block` elemanlik (16 MB) CPU hazirlama tamponunda yapilir; tensor basina CPU gecicisi
-    ayrilsaydi serbest kalan bloklar ayiricida kalip bosaltmadan sonra da ayak izinde
-    duruyordu.
+    The old path (load fp32 on the device, then .half()) left a 2773 MB footprint per
+    568 M-parameter model: the MPS allocator places the fp16 tensors into the vacated fp32
+    buffers (1682 MiB live, versus the expected 1083) and does not return the 977 MiB fp32
+    embedding buffer to the driver even on empty_cache. The reverse does not work either:
+    converting the whole model to fp16 on the CPU and then moving it leaves the same memory
+    on the CPU side (2734 MB). Moving tensor by tensor, fp32 never reaches the device:
+    1683 MB per model (2026-09-30, measured with footprint; encode output identical to 5
+    decimal places). The fp32 -> fp16 conversion happens in a single CPU staging buffer of
+    `block` elements (16 MB); with a CPU temporary per tensor, the freed blocks stayed in
+    the allocator and remained in the footprint even after unloading.
     """
     import torch
     with torch.no_grad():
@@ -67,10 +67,10 @@ def move_fp16(module, device: str, block: int = 8_000_000) -> None:
         del staging
         for mod in module.modules():
             for name, buf in list(mod._buffers.items()):
-                if buf is not None:             # konum/tip id'leri tamsayi: dtype korunur
+                if buf is not None:             # position/type ids are integers: dtype is kept
                     mod._buffers[name] = (buf.to(device, dtype=torch.float16)
                                           if buf.is_floating_point() else buf.to(device))
-    module.to(device)                           # tensorler yerinde; yalniz modulun cihaz bilgisi
+    module.to(device)                           # tensors already in place; only the module's device info
     if device == "mps":
         torch.mps.empty_cache()
 
@@ -82,9 +82,9 @@ def load_model(device: str, model_name: str = MODEL):
         from sentence_transformers import SentenceTransformer
         gpu = device in ("mps", "cuda")
         m = SentenceTransformer(model_name, device="cpu" if gpu else device)
-        # Parcalarimiz ~300 token; 1024 yerine 512 + fp16 MPS'te ~%37 hizlandiriyor
-        # (olculdu: 13.3 -> 18.3 parca/sn). Kalite farki normalize kosinusde ihmal
-        # edilebilir; sorgu tarafi da ayni modelle kodlandigi icin tutarli.
+        # Our chunks are ~300 tokens; 512 instead of 1024 + fp16 is ~37% faster on MPS
+        # (measured: 13.3 -> 18.3 chunks/s). The quality difference is negligible for
+        # normalized cosine; consistent, since the query side is encoded with the same model.
         m.max_seq_length = 512
         if gpu:
             move_fp16(m, device)
@@ -93,11 +93,11 @@ def load_model(device: str, model_name: str = MODEL):
 
 
 def unload_model() -> bool:
-    """Modeli bellekten dusur; sonraki load_model cagrisi yeniden yukler.
+    """Drop the model from memory; the next load_model call loads it again.
 
-    Bosta bosaltma icin (bkz. server._idle_watchdog). encode() modeli yerel bir
-    degiskende tuttugu icin devam eden bir cagri bundan etkilenmez.
-    Donus: gercekten bir sey bosaltildiysa True.
+    For idle unloading (see server._idle_watchdog). encode() holds the model in a local
+    variable, so a call in progress is not affected.
+    Returns: True if something was actually unloaded.
     """
     global _model
     with _model_lock:
@@ -108,18 +108,18 @@ def unload_model() -> bool:
 
 
 def _fast_exit(code: int) -> None:
-    """Sureci finalization'a girmeden kapat.
+    """Exit the process without going through finalization.
 
-    Normal CPython kapanisi bu is yukunde dakikalarca asiliyordu (olculdu: 12+ dk,
-    %1 CPU). Uc sebep birlikte calisiyor:
-      1. multiprocessing.resource_tracker.__del__ macOS + py3.12'de waitpid'de
-         zaman asimisiz bloke olur (cpython#88887). PyTorch'un atexit cozumu var
-         ama atexit yalniz threading._shutdown() dondukten sonra kosuyor ve
-         surecte ~34 thread (OpenMP intra-op) duruyor.
-      2. Takas altinda yuz binlerce chunk str'ini GC etmek sayfa-hatasi bagli.
-      3. Model + fp16 matrisin yikimi.
-    Tum yazmalar cagri oncesinde commit edilmis olmali; os._exit finalization'i
-    tamamen atladigi icin ucunu birden etkisizlestirir.
+    A normal CPython shutdown hung for minutes under this workload (measured: 12+ min,
+    1% CPU). Three causes act together:
+      1. multiprocessing.resource_tracker.__del__ blocks in waitpid with no timeout on
+         macOS + py3.12 (cpython#88887). PyTorch has an atexit workaround, but atexit
+         only runs after threading._shutdown() returns, and ~34 threads (OpenMP
+         intra-op) remain in the process.
+      2. Under swap, GC-ing hundreds of thousands of chunk strs is page-fault bound.
+      3. Tearing down the model + the fp16 matrix.
+    All writes must be committed before the call; since os._exit skips finalization
+    entirely, it neutralizes all three at once.
     """
     unload_model()
     try:
@@ -142,12 +142,13 @@ def encode(texts: list[str], device: str, batch: int = 32,
 
 
 def empty_f16(n: int, dim: int) -> np.ndarray:
-    """Anonim mmap uzerinde (n, dim) float16 dizi; son referans gidince bellek OS'a doner.
+    """An (n, dim) float16 array on anonymous mmap; the memory returns to the OS when the last reference goes.
 
-    np.empty ile ayrilan 2,4 GB'lik matris silindikten sonra da ayak izinde kaliyordu:
-    macOS libmalloc serbest kalan buyuk bloklari "large cache"te tutuyor (olculdu:
-    silinmis 2,3 GB `footprint`te 2734 MB; ayni blok mmap ile ayrilinca 408 MB'a dustu).
-    Bosta bosaltma (server._idle_watchdog) ancak bu sayede gercekten bellek geri verir.
+    A 2.4 GB matrix allocated with np.empty stayed in the footprint even after deletion:
+    macOS libmalloc keeps freed large blocks in its "large cache" (measured: a deleted
+    2.3 GB showed as 2734 MB in `footprint`; the same block allocated with mmap dropped to
+    408 MB). Only because of this does idle unloading (server._idle_watchdog) actually
+    return memory.
     """
     if n * dim == 0:
         return np.zeros((n, dim), dtype=np.float16)
@@ -156,15 +157,15 @@ def empty_f16(n: int, dim: int) -> np.ndarray:
 
 def load_matrix(con: sqlite3.Connection, block: int = 8192
                 ) -> tuple[np.ndarray, np.ndarray]:
-    """Tum vektorleri tek matris olarak bellege al. (ids, matrix[n,dim] float16)
+    """Load all vectors into memory as a single matrix. (ids, matrix[n,dim] float16)
 
-    Eski hali fetchall() + b"".join kullaniyordu; ikisi de tam boyda, yani zirvede
-    matrisin IKI kopyasi RAM'de duruyordu (963.868 vektorde 1.84 -> 3.68 GB).
-    Burada hedef dizi onceden ayrilip imlecten bloklar halinde dolduruluyor:
-    zirve = tek kopya + `block` satirlik gecici tampon (8192 x 2 KB = 16 MB).
+    The old version used fetchall() + b"".join; both are full-size, so at the peak
+    TWO copies of the matrix sat in RAM (1.84 -> 3.68 GB at 963,868 vectors).
+    Here the target array is preallocated and filled from the cursor in blocks:
+    peak = one copy + a temporary buffer of `block` rows (8192 x 2 KB = 16 MB).
 
-    dim ilk satirdan cikarilir; DIM sabiti farkli bir modele gecildiginde
-    sessizce yanlis reshape uretmesin diye varsayim yapilmaz.
+    dim is derived from the first row; no assumption is made, so that the DIM constant
+    cannot silently produce a wrong reshape after switching to a different model.
     """
     n, = con.execute("SELECT count(*) FROM embeddings").fetchone()
     if not n:
@@ -172,13 +173,13 @@ def load_matrix(con: sqlite3.Connection, block: int = 8192
 
     cur = con.execute("SELECT chunk_id, vec FROM embeddings ORDER BY chunk_id")
     first = cur.fetchmany(block)
-    dim = len(first[0][1]) // 2                 # float16 -> 2 bayt
+    dim = len(first[0][1]) // 2                 # float16 -> 2 bytes
     ids = np.empty(n, dtype=np.int64)
     mat = empty_f16(n, dim)
 
     i, rows = 0, first
     while rows:
-        k = min(len(rows), n - i)               # embed isi arada satir eklerse tasma
+        k = min(len(rows), n - i)               # overflow if the embed job adds rows meanwhile
         if k <= 0:
             break
         ids[i:i + k] = [r[0] for r in rows[:k]]
@@ -233,8 +234,8 @@ def main() -> int:
     con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('embed_model',?)",
                 (args.model,))
     con.commit()
-    # Kapanis WAL'i checkpoint eder; belirsiz finalization yerine burada, olculebilir
-    # bir noktada odenmesi tercih edilir.
+    # Closing checkpoints the WAL; better to pay for it here, at a measurable point,
+    # than during unpredictable finalization.
     con.close()
     print(f"bitti: {done} vektor, {time.time()-t0:.0f} sn")
     return 0

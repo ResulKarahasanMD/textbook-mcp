@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""PDF ders kitaplarini corpus.sqlite icine al.
+"""Ingest PDF textbooks into corpus.sqlite.
 
-Kullanim:
+Usage:
     python -m tbmcp.ingest /kitap/dizini --db corpus.sqlite
-    python -m tbmcp.ingest /kitap/dizini --db corpus.sqlite --probe   # sadece rapor, yazma yok
+    python -m tbmcp.ingest /kitap/dizini --db corpus.sqlite --probe   # report only, no writes
 
-Metin katmani olmayan (taranmis) PDF'ler isaretlenir ve atlanir; ocr.sh onlari isler.
+PDFs without a text layer (scanned) are flagged and skipped; ocr.sh handles them.
 """
 from __future__ import annotations
 
@@ -23,12 +23,12 @@ import pymupdf as fitz
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 
-# Metin katmani var mi kararinin esigi: sayfa basina ortalama karakter
+# Threshold for deciding whether there is a text layer: average characters per page
 SCANNED_THRESHOLD = 200
-# Hedef parca boyutu (karakter). ~1200 karakter ~ 300 token.
+# Target chunk size (characters). ~1200 characters ~ 300 tokens.
 CHUNK_CHARS = 1200
 CHUNK_OVERLAP = 180
-# Bir satir sayfalarin bu oranindan fazlasinda gecerse ust/alt bilgi sayilir
+# A line that appears on more than this fraction of pages counts as a running header/footer
 HEADER_MIN_RATIO = 0.30
 HEADER_MAX_LEN = 90
 
@@ -41,9 +41,9 @@ def connect(db_path: str) -> sqlite3.Connection:
     return con
 
 
-# ---------------------------------------------------------------------- metin
+# ----------------------------------------------------------------------- text
 def sha256(path: Path, limit: int = 8 << 20) -> str:
-    """Basi + sonu + boyut uzerinden hizli parmak izi (tam dosya degil, kasitli)."""
+    """Fast fingerprint over head + tail + size (not the whole file, on purpose)."""
     h = hashlib.sha256()
     size = path.stat().st_size
     h.update(str(size).encode())
@@ -62,14 +62,14 @@ _TRAIL_WS = re.compile(r"[ \t]+\n")
 
 def clean(text: str) -> str:
     text = text.replace(" ", " ").replace("ﬁ", "fi").replace("ﬂ", "fl")
-    text = _HYPHEN.sub(r"\1\2", text)          # satir sonu tirelemesini birlestir
+    text = _HYPHEN.sub(r"\1\2", text)          # join end-of-line hyphenation
     text = _TRAIL_WS.sub("\n", text)
     text = _MULTI_NL.sub("\n\n", text)
     return text.strip()
 
 
 def find_running_lines(pages: list[str]) -> set[str]:
-    """Sayfalarin cogunda tekrar eden ust/alt bilgi satirlarini bul."""
+    """Find running header/footer lines that repeat on most pages."""
     if len(pages) < 10:
         return set()
     counter: Counter[str] = Counter()
@@ -79,21 +79,21 @@ def find_running_lines(pages: list[str]) -> set[str]:
             continue
         for line in lines[:2] + lines[-2:]:
             if len(line) <= HEADER_MAX_LEN:
-                # sayfa numaralarini normalize et: "Chapter 4  127" -> "Chapter 4  #"
+                # normalize page numbers: "Chapter 4  127" -> "Chapter 4  #"
                 counter[re.sub(r"\d+", "#", line)] += 1
     floor = max(3, int(len(pages) * HEADER_MIN_RATIO))
     return {k for k, v in counter.items() if v >= floor}
 
 
 def strip_running(text: str, running: set[str]) -> str:
-    """Tespit edilen ust/alt bilgi satirlarini sayfa kenarlarindan at.
+    """Remove the detected running header/footer lines from the page edges.
 
-    Kenar penceresi find_running_lines ile AYNI koordinatta olmali: o, BOS OLMAYAN
-    satirlarin ilk/son ikisine bakiyor (satir 77). Burasi eskiden ham satir indeksi
-    kullaniyordu (i < 2); sayfa numarasi kendi satirinda olup ardindan bos satir
-    geldiginde baslik ham indeks 2'ye kayiyor ve elenmiyordu. Olculdu (ders notu koleksiyonu, 6554
-    sayfa): basligi kalan sayfa %49.9 -> %0.1, fazladan silinen karakter yalnizca %0.52.
-    Ayni hata 88 kitaplik mevcut korpusta da parcalara ustbilgi sizdirmisti.
+    The edge window must use the SAME coordinates as find_running_lines: that one looks at
+    the first/last two NON-EMPTY lines (line 77). This used to use the raw line index
+    (i < 2); when the page number sat on its own line followed by a blank line, the header
+    shifted to raw index 2 and was not removed. Measured (lecture notes collection, 6554
+    pages): pages with a leftover header 49.9% -> 0.1%, extra characters removed only 0.52%.
+    The same bug had also leaked headers into the chunks of the existing 88-book corpus.
     """
     if not running:
         return text
@@ -109,20 +109,20 @@ def strip_running(text: str, running: set[str]) -> str:
     return "\n".join(keep)
 
 
-# --------------------------------------------------------------------- parcala
+# ---------------------------------------------------------------------- chunk
 def section_map(toc: list[tuple[int, str, int]], n_pages: int) -> dict[int, str]:
-    """Her sayfa icin 'Bolum > Alt-bolum' yolunu TEK gecisde hesapla.
+    """Compute the 'Chapter > Subsection' path for every page in a SINGLE pass.
 
-    Parca basina toc'u bastan taramak O(parca x toc) idi; Mandell'de (4639 toc
-    girdisi, 37k parca) bu 170M+ dongu ediyordu. Simdi O(sayfa + toc).
+    Scanning the toc from the start for each chunk was O(chunks x toc); for Mandell (4639
+    toc entries, 37k chunks) that came to 170M+ iterations. Now it is O(pages + toc).
     """
     out: dict[int, str] = {}
     if not toc:
         return out
-    # YALNIZ sayfaya gore sirala: Python sort kararli oldugu icin ayni sayfada
-    # baslayan girdiler belge (outline) sirasini korur. Eski (page, level)
-    # anahtari ayni-sayfa girdilerini yeniden dizip derin basligi yanlis
-    # ebeveyne asiyordu (olculdu: 25/43 kitapta ~5.5k sayfa yanlis etiket).
+    # Sort by page ONLY: Python's sort is stable, so entries starting on the same page
+    # keep their document (outline) order. The old (page, level) key reordered
+    # same-page entries and hung a deep heading under the wrong parent
+    # (measured: ~5.5k pages mislabeled in 25/43 books).
     entries = sorted(toc, key=lambda t: t[2])
     path: dict[int, str] = {}
     i, cur = 0, ""
@@ -140,13 +140,13 @@ def section_map(toc: list[tuple[int, str, int]], n_pages: int) -> dict[int, str]
 
 
 def chunk_book(pages: dict[int, str], secmap: dict[int, str]):
-    """Kitap metnini sayfa sinirlarini takip ederek parcalara ayir.
+    """Split the book text into chunks while tracking page boundaries.
 
     Yield: (page_start, page_end, section, text)
     """
-    # Tum metni tek akista birlestir, her karakterin hangi sayfada oldugunu tut
+    # Join all text into one stream and track which page each character is on
     buf: list[str] = []
-    marks: list[tuple[int, int]] = []  # (akistaki_offset, sayfa)
+    marks: list[tuple[int, int]] = []  # (offset_in_stream, page)
     pos = 0
     for page in sorted(pages):
         txt = pages[page]
@@ -176,7 +176,7 @@ def chunk_book(pages: dict[int, str], secmap: dict[int, str]):
     while start < n:
         end = min(start + CHUNK_CHARS, n)
         if end < n:
-            # paragraf, sonra cumle, sonra bosluk sinirinda kes
+            # cut at a paragraph, then a sentence, then a whitespace boundary
             window = stream[start:end]
             for sep in ("\n\n", ". ", "\n", " "):
                 cut = window.rfind(sep)
@@ -192,13 +192,13 @@ def chunk_book(pages: dict[int, str], secmap: dict[int, str]):
         start = end - CHUNK_OVERLAP if end < n else end
 
 
-# ----------------------------------------------------------------------- kitap
+# ------------------------------------------------------------------------ book
 def slugify(name: str, taken: set[str], strip: tuple[str, ...] = ()) -> str:
-    """Dosya adindan kisa, benzersiz bir slug uret.
+    """Derive a short, unique slug from the file name.
 
-    strip: slug uretilmeden once addan silinecek duzenli ifadeler (buyuk/kucuk harf
-    duyarsiz). Varsayilan bos; dosya adlarinda sabit bir ek ya da kuyruk varsa
-    komut satirindan --strip-name ile verilir.
+    strip: regular expressions to remove from the name before slugging
+    (case-insensitive). Empty by default; if the file names carry a fixed suffix or tail,
+    pass them on the command line with --strip-name.
     """
     s = name
     for pattern in strip:
@@ -213,7 +213,7 @@ def slugify(name: str, taken: set[str], strip: tuple[str, ...] = ()) -> str:
 
 
 def probe(path: Path) -> dict:
-    """Metin katmani var mi? Ilk/orta/son sayfalardan orneklem al."""
+    """Is there a text layer? Sample the first/middle/last pages."""
     with fitz.open(path) as doc:
         n = doc.page_count
         if n == 0:
@@ -262,9 +262,9 @@ def ingest_book(con: sqlite3.Connection, path: Path, slug: str, info: dict,
     cur.executemany(
         "INSERT INTO chunks(book_id,page_start,page_end,section,text) VALUES(?,?,?,?,?)",
         rows)
-    # FTS'i ayni transaction icinde artimli doldur: external-content FTS5'te
-    # senkron trigger yok; eskiden tek senkron nokta kosu SONUNDAKI rebuild idi —
-    # kosu yarida kalirsa commit edilmis kitaplar BM25'te sessizce gorunmuyordu.
+    # Fill the FTS incrementally in the same transaction: external-content FTS5 has no
+    # sync trigger; the only sync point used to be the rebuild at the END of the run —
+    # if the run was interrupted, already committed books were silently invisible to BM25.
     cur.execute(
         "INSERT INTO chunks_fts(rowid,text,section)"
         " SELECT id,text,section FROM chunks WHERE book_id=?", (book_id,))
@@ -304,7 +304,7 @@ def main() -> int:
     for s in args.src:
         p = Path(s).expanduser()
         pdfs += sorted(p.rglob("*.pdf")) if p.is_dir() else [p]
-    # Ayni dosya iki yoldan gelirse (ic ice dizin, goreli+mutlak) tek kez isle
+    # If the same file arrives via two paths (nested directory, relative+absolute), process it once
     _seen: set[str] = set()
     pdfs = [p for p in pdfs if p.is_file()
             and (rp := str(p.resolve())) not in _seen and not _seen.add(rp)]
@@ -352,7 +352,7 @@ def main() -> int:
         try:
             c = ingest_book(con, p, slug, info, args.collection, args.lang)
         except Exception as e:
-            # Tek bozuk PDF kosuyu oldurmesin: yarim transaction'i geri al, devam et.
+            # A single broken PDF must not kill the run: roll back the partial transaction, continue.
             con.rollback()
             print(f"  HATA {p.name[:60]}: {e} — atlandi", file=sys.stderr)
             continue
@@ -363,7 +363,7 @@ def main() -> int:
 
     if args.rebuild_fts:
         print("FTS5 indeksi sifirdan kuruluyor...")
-        con.rollback()          # olasi yarim transaction'la rebuild'e girme
+        con.rollback()          # don't enter the rebuild with a possibly partial transaction
         rebuild_fts(con)
     con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('ingested_at',datetime('now'))")
     con.commit()

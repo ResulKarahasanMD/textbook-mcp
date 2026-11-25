@@ -1,8 +1,8 @@
-"""MPS bellegi: modeller fp16 boyutunda durmali, arama bitince onbellek geri verilmeli.
+"""MPS memory: the models must stay at fp16 size, and the cache must be released after a search.
 
-Gercek modelleri yukler (bge-m3 + bge-reranker-v2-m3, ~20 sn), bu yuzden varsayilan kapali:
+Loads the real models (bge-m3 + bge-reranker-v2-m3, ~20 s), so it is off by default:
 
-    cd <depo> && TEXTBOOK_GPU_TESTS=1 .venv/bin/python -m unittest tests.test_gpu_memory -v
+    cd <repo> && TEXTBOOK_GPU_TESTS=1 .venv/bin/python -m unittest tests.test_gpu_memory -v
 """
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ class GpuBellek(unittest.TestCase):
         self.assertTrue(self.yuklu["model"] and self.yuklu["reranker"])
 
     def test_iki_model_fp16_boyutunda_durur(self):
-        # 2 x 568 M parametre x 2 bayt = 2166 MiB. fp32 yukleyip cihazda .half() cagirmak
-        # tensorleri fp32 boyutlu tamponlarda birakiyordu (olculdu: 3369 MiB).
+        # 2 x 568 M parameters x 2 bytes = 2166 MiB. Loading fp32 and calling .half() on the
+        # device left the tensors in fp32-sized buffers (measured: 3369 MiB).
         self.assertLess(self.current / MB, 2500)
 
     def test_arama_sonrasi_geri_verilebilir_onbellek_kalmaz(self):

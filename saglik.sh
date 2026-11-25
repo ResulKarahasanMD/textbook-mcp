@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Korpus saglik raporu — markdown olarak stdout'a. Salt okur, hicbir sey yazmaz.
+# Corpus health report — as markdown on stdout. Read-only; writes nothing.
 #
-#   ./saglik.sh                      # ekrana
+#   ./saglik.sh                      # to the screen
 #   ./saglik.sh > saglik-raporu-$(date +%F).md
 #
-# Elle yazilan saglik-raporu-*.md dosyalarinin yerine gecer: onlar bayatliyordu
-# (2026-09-21 tarihlisi 88 kitap / %100 vektor diyordu, gercek 146 kitapti).
+# Replaces the hand-written saglik-raporu-*.md files: those went stale
+# (the one dated 2026-09-21 said 88 books / 100% vectors; the real count was 146 books).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 DB="${1:-$ROOT/corpus.sqlite}"
@@ -21,7 +21,7 @@ one = lambda s, a=(): con.execute(s, a).fetchone()[0]
 print(f"# Korpus saglik raporu — {datetime.now():%Y-%m-%d %H:%M}\n")
 print(f"`{db}` — {os.path.getsize(db)/2**30:.1f} GiB\n")
 
-# ---------------------------------------------------------------- olcekler
+# ------------------------------------------------------------------- scale
 print("## Olcek\n")
 print("| koleksiyon | kitap | sayfa | parca | vektor | kapsam |")
 print("|---|---:|---:|---:|---:|---:|")
@@ -38,7 +38,7 @@ print(f"| **toplam** | **{one('SELECT count(*) FROM books')}** |"
       f" **{one('SELECT coalesce(sum(n_pages),0) FROM books'):,}** |"
       f" **{tp:,}** | **{tv:,}** | **%{100*tv/max(1,tp):.1f}** |\n")
 
-# -------------------------------------------------------------- butunluk
+# --------------------------------------------------------------- integrity
 print("## Butunluk\n")
 checks = [
     ("quick_check", one("PRAGMA quick_check"), "ok"),
@@ -80,7 +80,7 @@ if toc_yok:
         " (SELECT 1 FROM toc t WHERE t.book_id=b.id) ORDER BY 1")]
     print(f"  - {', '.join(kt)}")
 
-# ------------------------------------------------------------------ sistem
+# ------------------------------------------------------------------ system
 print("\n## Sistem\n")
 du = shutil.disk_usage(os.path.dirname(db) or ".")
 swap = subprocess.run(["sysctl", "-n", "vm.swapusage"],

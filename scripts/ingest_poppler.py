@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""MuPDF'in patolojik yavas kaldigi PDF'i poppler(pdftotext) ciktisiyla korpusa al.
+"""Ingest a PDF on which MuPDF is pathologically slow, using poppler (pdftotext) output.
 
-Nicin: bazi bozuk/onarilmis PDF'lerde MuPDF sayfa icerigi parse'i ~0.4 sayfa/sn'ye
-duser (olculdu: 2 ciltlik bir ders kitabinda, qpdf onarimi sonrasi bile). Poppler ayni dosyayi
-~200 sayfa/sn okur. Bu betik pdftotext ciktisini (sayfa siniri = form-feed \\f) ve
-istege bagli fitz TOC json'unu alir, tbmcp.ingest'in temizlik/parcalama/FTS yolunu
-aynen kullanir.
+Why: on some broken/repaired PDFs MuPDF's page content parsing drops to ~0.4 pages/s
+(measured: on a two-volume textbook, even after a qpdf repair). Poppler reads the same file
+at ~200 pages/s. This script takes the pdftotext output (page boundary = form feed \\f) and
+an optional fitz TOC json, and reuses tbmcp.ingest's cleaning/chunking/FTS path
+unchanged.
 
     pdftotext kitap.pdf kitap.txt
     .venv/bin/python scripts/ingest_poppler.py --pdf kitap.pdf --txt kitap.txt \\
@@ -38,7 +38,7 @@ def main() -> int:
     pdf = Path(a.pdf)
     raw = Path(a.txt).read_text(encoding="utf-8", errors="replace").split("\f")
     if raw and not raw[-1].strip():
-        raw.pop()                          # pdftotext son sayfadan sonra da \f basar
+        raw.pop()                          # pdftotext also emits \f after the last page
     n_pages = len(raw)
     toc = []
     if a.toc:

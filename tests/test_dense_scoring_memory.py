@@ -1,8 +1,8 @@
-"""Puanlama, matrisle orantili fp32 gecici dizi ayirmamali.
+"""Scoring must not allocate an fp32 temporary array proportional to the matrix.
 
-Bu makinede serbest birakilan buyuk numpy bloklari ayak izinde kaliyor (olculdu:
-silinen 762 MB `footprint`te MALLOC_LARGE olarak duruyor), yani her gecici tahsis kalici
-maliyet. Test numpy tahsislerini tracemalloc ile sayar.
+On this machine freed large numpy blocks stay in the footprint (measured: a deleted
+762 MB remains in `footprint` as MALLOC_LARGE), so every temporary allocation is a lasting
+cost. The test counts numpy allocations with tracemalloc.
 """
 from __future__ import annotations
 
@@ -36,8 +36,8 @@ class PuanlamaBellegi(unittest.TestCase):
 
     def test_puanlama_tum_matrisi_fp32ye_kopyalamaz(self):
         S.unload()
-        S._fresh_matrix(self.con)                       # matris yukleme maliyeti olcum disinda
-        tum_fp32 = SATIR * DIM * 4                      # 5,1 MB: tek parcada astype bunu ayirir
+        S._fresh_matrix(self.con)                       # matrix loading cost is outside the measurement
+        tum_fp32 = SATIR * DIM * 4                      # 5.1 MB: a one-shot astype allocates this
         tracemalloc.start()
         try:
             once, _ = tracemalloc.get_traced_memory()

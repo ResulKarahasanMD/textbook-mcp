@@ -1,9 +1,9 @@
-"""Filtreli dense arama tum vektor matrisini (korpusta 2,5 GB) yuklemeden calismali.
+"""Filtered dense search must work without loading the whole vector matrix (2.5 GB in the corpus).
 
-Model yuklenmez: sorgu vektoru sabitlenir (embed.encode yamalanir); test edilen sey
-hangi satirlarin bellege alindigi ve donen siralamadir.
+No model is loaded: the query vector is fixed (embed.encode is patched); what is tested is
+which rows are loaded into memory and the returned ranking.
 
-    cd <depo> && .venv/bin/python -m unittest discover -s tests -v
+    cd <repo> && .venv/bin/python -m unittest discover -s tests -v
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class DenseSubset(unittest.TestCase):
         self._encode, self._device, self._max = embed.encode, embed.get_device, getattr(S, "SUBSET_MAX_ROWS", None)
         embed.encode = lambda texts, device, **k: np.stack([self.qv] * len(texts))
         embed.get_device = lambda pref="auto": "cpu"
-        S.SUBSET_MAX_ROWS = 50          # textbook koleksiyonu (100 satir) "buyuk", notes (20) "kucuk"
+        S.SUBSET_MAX_ROWS = 50          # textbook collection (100 rows) is "large", notes (20) "small"
         S.unload()
 
     def tearDown(self):
@@ -42,7 +42,7 @@ class DenseSubset(unittest.TestCase):
         self.assertEqual(ids, F.kaba_kuvvet(self.con, self.qv, 5, "b.slug=?", ("kitap-a",)))
 
     def test_kitap_aramasi_tum_matris_yoluyla_ayni_sonucu_verir(self):
-        S._fresh_matrix(self.con)                       # genel arama yapilmis gibi: tum matris bellekte
+        S._fresh_matrix(self.con)                       # as if an unfiltered search ran: full matrix in memory
         tum = S.dense_search(self.con, "q", 10, book="kitap-a")
         S.unload()
         alt = S.dense_search(self.con, "q", 10, book="kitap-a")
@@ -50,7 +50,7 @@ class DenseSubset(unittest.TestCase):
         self.assertEqual(alt, tum)
 
     def test_esigi_asan_kitap_tum_matrisi_kullanir(self):
-        ids = S.dense_search(self.con, "q", 5, book="kitap-b")        # 60 satir > esik 50
+        ids = S.dense_search(self.con, "q", 5, book="kitap-b")        # 60 rows > threshold 50
         self.assertIsNotNone(S._matrix)
         self.assertEqual(ids, F.kaba_kuvvet(self.con, self.qv, 5, "b.slug=?", ("kitap-b",)))
 
@@ -79,7 +79,7 @@ class DenseSubset(unittest.TestCase):
         self.assertIsNone(S._matrix)
 
     def test_alt_kume_yeni_eklenen_vektoru_gorur(self):
-        S.dense_search(self.con, "q", 5, book="kitap-a")             # alt kume onbellege girdi
+        S.dense_search(self.con, "q", 5, book="kitap-a")             # the subset is now cached
         book_id = self.con.execute("SELECT id FROM books WHERE slug='kitap-a'").fetchone()[0]
         yeni = F.ekle(self.con, book_id, 99, "kitap-a yeni parca", self.qv.astype(np.float64))
         self.con.commit()

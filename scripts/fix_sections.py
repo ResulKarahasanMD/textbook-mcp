@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Bolum (section) etiketlerini duzeltilmis section_map ile yeniden hesapla.
+"""Recompute the section labels with the corrected section_map.
 
-Neden: eski section_map ayni sayfada baslayan TOC girdilerini (page, level)
-anahtariyla yeniden siraliyordu; derin baslik yanlis ebeveynin altina asiliyordu.
-Denetim (2026-08-26): ~18.6k parca hatali, ~11.5k parca bayat etiket tasiyor.
+Why: the old section_map reordered TOC entries starting on the same page by the
+(page, level) key; a deep heading got hung under the wrong parent.
+Audit (2026-08-26): ~18.6k chunks wrong, ~11.5k chunks carry a stale label.
 
-NE ZAMAN: embed isi BITTIKTEN sonra (FTS rebuild yazma kilidini dakikalarca tutar,
-kosan embed 'database is locked' ile olur). Betik kosan embed gorurse durur.
+WHEN: AFTER the embed job has FINISHED (the FTS rebuild holds the write lock for minutes,
+and a running embed dies with 'database is locked'). The script stops if it sees a running embed.
 
     .venv/bin/python scripts/fix_sections.py [--db corpus.sqlite] [--dry-run]
 """
@@ -32,7 +32,7 @@ def main() -> int:
     con.execute("PRAGMA busy_timeout=30000")
     t0, updated, books = time.time(), 0, 0
     for bid, slug, n_pages in con.execute("SELECT id,slug,n_pages FROM books").fetchall():
-        # ORDER BY id = outline (belge) on-sirasi; section_map kararli sort'la bunu korur
+        # ORDER BY id = outline (document) pre-order; section_map keeps it with a stable sort
         toc = [(lvl, (t or "").replace("\r", " ").strip(), pg) for lvl, t, pg in con.execute(
             "SELECT level,title,page FROM toc WHERE book_id=? ORDER BY id", (bid,))]
         secmap = section_map(toc, n_pages)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vektorleme durumu: ilerleme, OLCULEN anlik hiz, kalan sure, surec sagligi
+# Embedding status: progress, MEASURED current rate, time remaining, process health
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 DB="${1:-$ROOT/corpus.sqlite}"
 "$ROOT/.venv/bin/python" - "$DB" <<'PY'
@@ -11,8 +11,8 @@ v0, n = q()
 alive = b"tbmcp.embed" in subprocess.run(["ps", "ax"], capture_output=True).stdout
 rate = 0.0
 if alive and v0 < n:
-    # Is ~512 parcada bir commit eder; sabit 8 sn pencere commit arasina
-    # denk gelip 0 gorebiliyordu. Commit yakalayana dek (en cok 45 sn) bekle.
+    # The job commits every ~512 chunks; a fixed 8 s window could fall between
+    # commits and see 0. Wait until a commit is caught (at most 45 s).
     t0 = time.time()
     while time.time() - t0 < 45:
         time.sleep(3)

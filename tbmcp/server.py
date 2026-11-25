@@ -23,8 +23,8 @@ import sqlite3
 import time
 from pathlib import Path
 
-# stdio MCP'de stdout YALNIZ protokol icindir. Kutuphane loglarini stderr'e sabitle
-# ve HF'yi cevrimdisi calistir (modeller zaten yerel; aksi halde her acilista ag).
+# In stdio MCP, stdout is for the protocol ONLY. Pin library logs to stderr
+# and run HF offline (the models are already local; otherwise every startup hits the network).
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 logging.basicConfig(level=logging.WARNING, stream=__import__("sys").stderr)
@@ -38,28 +38,28 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from . import search as S
 
-# Varsayilan yol calisma dizinine degil pakete gore: sunucu hangi cwd'den
-# baslatilirsa baslatilsin ayni korpusu bulur.
+# The default path is relative to the package, not the working directory: the server
+# finds the same corpus whatever cwd it is started from.
 DB_PATH = os.environ.get("TEXTBOOK_DB") or str(
     Path(__file__).resolve().parent.parent / "corpus.sqlite")
 USE_DENSE = os.environ.get("TEXTBOOK_DENSE", "1") != "0"
 USE_RERANK = os.environ.get("TEXTBOOK_RERANK", "1") != "0"
-# Isitma artik OPT-IN. stdio MCP sunuculari oturum basina ayri surec olarak
-# dogar; kosulsuz isitma her oturumda matris (1.8 GB) + bge-m3 + reranker
-# = ~8 GB'i, o oturum textbook'u hic kullanmasa bile ayiriyordu. 7 es zamanli
-# oturumda bu 56 GB'a cikip 18 GB'lik makineyi 42 GB takasa gomdu (olculdu).
-# Tembel tekil nesneler zaten ilk cagrida yukluyor; bedeli ilk aramada ~8 sn.
+# Warmup is now OPT-IN. stdio MCP servers are spawned as a separate process per
+# session; unconditional warmup allocated matrix (1.8 GB) + bge-m3 + reranker
+# = ~8 GB in every session, even one that never used textbook. With 7 concurrent
+# sessions this reached 56 GB and buried the 18 GB machine in 42 GB of swap (measured).
+# The lazy singletons already load on first call; the cost is ~8 s on the first search.
 USE_WARMUP = os.environ.get("TEXTBOOK_WARMUP", "0") == "1"
-# Bosta bosaltma: isitmanin simetrigi. Isitma HIC kullanilmayan oturumda bellek
-# ayiriyordu; bu ise KULLANILMIS oturumda bellegin suresiz tutulmasini onler.
-# Olculdu 2026-09-22, CANLI sunucu (Apple MPS): arama sonrasi RSS 2502 MB;
-# bosaltmadan 60 sn sonra 926 MB ve orada SABIT (2 dk boyunca sapma yok).
-# Oturum basina kazanc ~1.6 GB. Kalan 926 MB modeller DEGIL -- corpus_info
-# "su_an_bellekte" ucunu de false gosteriyor; bu, Python/torch ayiricisinin
-# 982.878 satirlik matristen kalan arenayi macOS'a geri vermemesi. Hic arama
-# yapmamis oturum ~76 MB'ta kalir (tembel yukleme). 6 es zamanli oturumda
-# takas 12 GB'a cikmisti. Bedel: sonraki aramada soguk yeniden yukleme
-# (olculdu 11.9-16.3 sn; ilk yukleme 391+393 agirlik parcasi).
+# Idle unload: the counterpart of warmup. Warmup allocated memory in sessions that
+# NEVER used it; this prevents memory from being held indefinitely in sessions that DID.
+# Measured 2026-09-22, LIVE server (Apple MPS): RSS 2502 MB after a search;
+# 926 MB 60 s after unloading, and STABLE there (no drift over 2 min).
+# Gain per session ~1.6 GB. The remaining 926 MB is NOT the models -- corpus_info
+# shows all three "su_an_bellekte" flags as false; it is the Python/torch allocator
+# not returning to macOS the arena left over from the 982,878-row matrix. A session
+# that never searched stays at ~76 MB (lazy loading). With 6 concurrent sessions
+# swap had reached 12 GB. Cost: a cold reload on the next search
+# (measured 11.9-16.3 s; the first load is 391+393 weight shards).
 IDLE_UNLOAD = max(0, int(os.environ.get("TEXTBOOK_IDLE_UNLOAD", "60")))
 _last_activity = time.monotonic()
 _activity_lock = threading.Lock()
@@ -69,13 +69,14 @@ _inflight = 0
 
 
 def _tracked(fn):
-    """Arac cagrisini 'ucusta' say ve BITISTE saati sifirla.
+    """Count the tool call as 'in flight' and reset the clock when it FINISHES.
 
-    Sadece girise bakmak yetmiyordu: modelleri yukleyen ilk arama 20 sn suruyor
-    ve o sure boyunca aktivite tazelenmedigi icin gozcu isin ORTASINDA bosaltma
-    yapiyordu (olculdu, 5 sn'lik esikle yeniden uretildi). Sayac sifirdan buyukken
-    gozcu hic dokunmaz; sure de cagri bitince baslar -- "sorgu bittikten N sn
-    sonra" tanimi tam olarak bu. Ic ice cagri guvenli (find_in_book -> search).
+    Looking only at entry was not enough: the first search, which loads the models, takes
+    20 s, and because activity was not refreshed during that time the watchdog unloaded in
+    the MIDDLE of the work (measured, reproduced with a 5 s threshold). While the counter is
+    above zero the watchdog does not touch anything; the timer starts when the call ends --
+    exactly the definition "N s after the query finished". Nested calls are safe
+    (find_in_book -> search).
     """
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
@@ -104,24 +105,24 @@ def db() -> sqlite3.Connection:
                 if not p.exists():
                     raise ToolError(
                         f"Korpus bulunamadi: {p}. Once `python -m tbmcp.ingest` calistir.")
-                # SALT-OKUNUR: sunucu hicbir zaman yazmaz; ayni dosyaya es zamanli
-                # yazan embed isiyle kilit yarisina girmesin.
+                # READ-ONLY: the server never writes; it must not race for locks with
+                # an embed job writing to the same file concurrently.
                 _con = sqlite3.connect(f"file:{p}?mode=ro", uri=True,
                                        check_same_thread=False)
-                # mmap: VARSAYILAN KAPALI -- olculdu, kazanci yok.
-                # 2026-09-22, 982.878 satirlik matris, ayri sureclerde 4'er
-                # tekrar: acik ort. 2,85 s (medyan 2,08), kapali ort. 2,61 s
-                # (medyan 2,32). Fark gurultunun icinde; her iki seride birer
-                # aykiri deger (5,33 / 3,86 s) var. Kabul olcutu >=%10 idi.
-                # DIKKAT: yalniz ISINMIS hal olculdu. SOGUK acilis (mmap'in
-                # yardim etmesi beklenen tek durum) olculemedi: `purge` root
-                # istiyor. Soguk olcmek icin `sudo purge` sonrasi:
+                # mmap: OFF BY DEFAULT -- measured, no gain.
+                # 2026-09-22, 982,878-row matrix, 4 repetitions each in separate
+                # processes: on mean 2.85 s (median 2.08), off mean 2.61 s
+                # (median 2.32). The difference is within the noise; each series has
+                # one outlier (5.33 / 3.86 s). The acceptance criterion was >=10%.
+                # CAUTION: only the WARM state was measured. A COLD start (the only
+                # case where mmap is expected to help) could not be measured: `purge`
+                # needs root. To measure cold, after `sudo purge`:
                 #   TEXTBOOK_MMAP=2147483648 .venv/bin/python -c "..."
                 mmap_bytes = int(os.environ.get("TEXTBOOK_MMAP", 0))
                 if mmap_bytes:
                     _con.execute(f"PRAGMA mmap_size={mmap_bytes}")
-                # WAL'da okuyucu yazicidan engellenmez; bu yalniz checkpoint/
-                # kurtarma anlarina karsi ucuz sigorta. Kazanc iddia edilmiyor.
+                # In WAL mode a reader is not blocked by the writer; this is only cheap
+                # insurance for checkpoint/recovery moments. No gain is claimed.
                 _con.execute("PRAGMA busy_timeout=5000")
     return _con
 
@@ -135,7 +136,7 @@ def _book_id(slug: str) -> tuple[int, str, int]:
     return row
 
 
-# --------------------------------------------------------------------- araclar
+# ----------------------------------------------------------------------- tools
 @mcp.tool()
 @_tracked
 def textbook_list_books() -> str:
@@ -196,7 +197,7 @@ def textbook_search(query: str, book: str = "", top_k: int = 8) -> str:
 
 
 def _fmt_hits(hits, query: str, bos_ipucu: str = "") -> str:
-    """Arama sonuclarini kunyeli metne cevir (textbook_search ve textbook_notes_search ortak)."""
+    """Format search results as cited text (shared by textbook_search and textbook_notes_search)."""
     if not hits:
         return (f"'{query}' icin korpusta sonuc yok. "
                 + (bos_ipucu or "Terimi degistirip tekrar dene veya "
@@ -270,7 +271,7 @@ def textbook_get_page(book: str, page: int, window: int = 1) -> str:
         seg = f"\n----- [{book} s.{p}] -----\n{txt or '(bos sayfa)'}"
         total += len(seg)
         parts.append(seg)
-        if total > 60_000:        # ~15k token tavani: 11 dev sayfa baglami sismesin
+        if total > 60_000:        # ~15k token cap: 11 huge pages must not bloat the context
             parts.append(f"\n[kirpildi — kalan sayfalar icin window'u kucult]")
             break
     return "\n".join(parts)
@@ -327,18 +328,18 @@ def textbook_page_image(book: str, page: int, dpi: int = 150) -> Image:
         raise ToolError(f"Bilinmeyen kitap: {book!r}")
     path, n_pages, sha = row
     if not os.path.isabs(path):
-        # Goreli yol sunucunun cwd'sine gore cozulurdu ve cwd kasitli olarak
-        # belirsiz (bkz. DB_PATH notu) — sessizce yanlis dosya acmaktansa durur.
+        # A relative path would resolve against the server's cwd, and the cwd is deliberately
+        # unspecified (see the DB_PATH note) — stop rather than silently open the wrong file.
         raise ToolError(f"{book}: books.path goreli ({path!r}); mutlak yola cevrilmeli.")
     try:
         doc = pymupdf.open(path)
     except Exception:
         raise ToolError(f"PDF acilamadi (tasinmis olabilir): {path}")
     with doc:
-        # Yol ayni kalip dosya BASKA bir baskiyla degistirilirse sayfa numaralari
-        # kayar ve arac sessizce yanlis sayfayi gosterirdi. Sayfa sayisi bedava
-        # bir kimlik kontrolu (dokuman zaten acik); farkli baski neredeyse her
-        # zaman farkli sayfa sayisi tasir. Kesin dogrulama icin books.sha256 var.
+        # If the path stays the same but the file is replaced with ANOTHER edition, page
+        # numbers shift and the tool would silently show the wrong page. The page count is a
+        # free identity check (the document is already open); a different edition almost
+        # always has a different page count. For exact verification there is books.sha256.
         if n_pages and doc.page_count != n_pages:
             raise ToolError(
                 f"{book}: PDF {doc.page_count} sayfa, korpus {n_pages} bekliyor — "
@@ -346,9 +347,9 @@ def textbook_page_image(book: str, page: int, dpi: int = 150) -> Image:
                 f"shasum -a 256 {path!r}  ->  beklenen {sha or '(kayitli degil)'}")
         if not 1 <= page <= doc.page_count:
             raise ToolError(f"{book} {doc.page_count} sayfa; s.{page} yok.")
-        # Uzun kenari 1568 px ile sinirla: API zaten 1568 uzerini kucultuyor,
-        # fazlasi modele ulasmayan bant genisligi. Buyuk formatli sayfa 200 dpi'da
-        # 6+ MB PNG uretiyordu; tavan + JPEG fallback en kotuyu ~1 MB altina indirir.
+        # Cap the long edge at 1568 px: the API downscales anything above 1568 anyway,
+        # and the excess is bandwidth that never reaches the model. A large-format page at
+        # 200 dpi produced a 6+ MB PNG; the cap + JPEG fallback brings the worst case under ~1 MB.
         rect = doc[page - 1].rect
         zoom = min(max(72, min(dpi, 200)) / 72,
                    1568 / max(rect.width, rect.height))
@@ -394,12 +395,12 @@ def textbook_corpus_info() -> str:
 
 
 def _warmup() -> None:
-    """Modelleri ve matrisi el sikismasindan sonra ARKA PLANDA isit.
+    """Warm up the models and the matrix IN THE BACKGROUND after the handshake.
 
-    Eskiden ilk textbook_search cagrisi ~8 sn model yuklemesini icinde tasiyordu
-    (Metal shader derlemesi dahil). Kilitler (search._model_lock/_mat_lock) ayni
-    anda gelen ilk sorguyla cifte yuklemeyi onler. Isitmaya minik bir encode +
-    rerank cifti dahil: sadece nesneyi kurmak shader derlemesini odemez.
+    Previously the first textbook_search call carried ~8 s of model loading
+    (including Metal shader compilation). The locks (search._model_lock/_mat_lock) prevent
+    a double load with a first query arriving at the same time. The warmup includes a tiny
+    encode + rerank pair: merely constructing the object does not pay for shader compilation.
     """
     try:
         con = db()
@@ -409,16 +410,16 @@ def _warmup() -> None:
             encode(["warmup"], get_device())
         if USE_RERANK:
             S.rerank("warmup", [S.Hit(0, "w", "w", 1, 1, "", "warmup text")], 1)
-    except Exception as e:                      # isitma hatasi olumcul degil
+    except Exception as e:                      # a warmup error is not fatal
         logging.warning("isitma atlandi: %s", e)
 
 
 def _idle_watchdog() -> None:
-    """IDLE_UNLOAD sn istek gelmezse modelleri/matrisi dusur, sonra beklemeye don.
+    """Drop the models/matrix if no request arrives for IDLE_UNLOAD s, then go back to waiting.
 
-    Surec OLMEZ: stdio borusu acik kalir, istemci yeniden baglanmak zorunda
-    degil. Uyanma araligi kalan sureye gore; bosaltma sonrasi 30 sn'de bir
-    sessizce dolanir (unload() bos donunce maliyet yok).
+    The process does NOT die: the stdio pipe stays open and the client does not have to
+    reconnect. The wake-up interval follows the remaining time; after an unload it quietly
+    loops every 30 s (no cost when unload() returns empty-handed).
     """
     while True:
         with _activity_lock:
@@ -428,7 +429,7 @@ def _idle_watchdog() -> None:
             try:
                 if S.unload():
                     logging.warning("bosta %.0f sn -> modeller bellekten dusuruldu", idle)
-            except Exception as e:                  # bosaltma hatasi olumcul degil
+            except Exception as e:                  # an unload error is not fatal
                 logging.warning("bosta bosaltma basarisiz: %s", e)
             time.sleep(min(IDLE_UNLOAD, 30))
         else:

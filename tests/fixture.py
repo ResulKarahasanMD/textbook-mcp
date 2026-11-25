@@ -1,4 +1,4 @@
-"""Testler icin kucuk sentetik korpus: gercek sema, rastgele normalize fp16 vektorler."""
+"""Small synthetic corpus for tests: the real schema, random normalized fp16 vectors."""
 from __future__ import annotations
 
 import os
@@ -8,7 +8,7 @@ import tempfile
 import numpy as np
 
 SCHEMA = os.path.join(os.path.dirname(__file__), "..", "tbmcp", "schema.sql")
-# slug -> (koleksiyon, parca sayisi)
+# slug -> (collection, number of chunks)
 KITAPLAR = {"kitap-a": ("textbook", 40), "kitap-b": ("textbook", 60), "not-c": ("notes", 20)}
 
 
@@ -18,7 +18,7 @@ def vec_blob(v: np.ndarray) -> bytes:
 
 def korpus(dim: int = 16, seed: int = 7,
            kitaplar: dict[str, tuple[str, int]] | None = None) -> tuple[sqlite3.Connection, str]:
-    """(baglanti, dosya yolu). Her parcanin metni slug'ini ve 'insulin' sozcugunu icerir."""
+    """(connection, file path). Each chunk's text contains its slug and the word 'insulin'."""
     fd, path = tempfile.mkstemp(suffix=".sqlite")
     os.close(fd)
     con = sqlite3.connect(path, check_same_thread=False)
@@ -42,7 +42,7 @@ def ekle(con: sqlite3.Connection, book_id: int, page: int, text: str, v: np.ndar
 
 
 def kaba_kuvvet(con: sqlite3.Connection, qv: np.ndarray, limit: int, where: str, params: tuple) -> list[int]:
-    """Beklenen sonuc: filtreye uyan satirlarda nokta carpimi, buyukten kucuge ilk `limit` id."""
+    """Expected result: dot product over the rows matching the filter, top `limit` ids in descending order."""
     rows = con.execute("SELECT e.chunk_id, e.vec FROM embeddings e JOIN chunks c ON c.id=e.chunk_id"
                        " JOIN books b ON b.id=c.book_id WHERE " + where, params).fetchall()
     q = qv.astype(np.float32)

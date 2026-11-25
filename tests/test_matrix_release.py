@@ -1,9 +1,10 @@
-"""Bosaltilan vektor matrisi isletim sistemine geri donmeli.
+"""An unloaded vector matrix must be returned to the operating system.
 
-macOS libmalloc serbest birakilan buyuk bloklari "large cache"te tutuyor ve bunlar surecin
-ayak izinde kaliyor (olculdu: silinen 2,3 GB'lik np.empty `footprint`te 2734 MB olarak
-durdu; ayni blok anonim mmap ile ayrilinca silinince dustu). Bosta bosaltmanin (unload)
-anlami bu yuzden tahsis bicimine bagli. Test gercek ayak izini /usr/bin/footprint ile olcer.
+macOS libmalloc keeps freed large blocks in its "large cache", and they stay in the
+process footprint (measured: a deleted 2.3 GB np.empty remained at 2734 MB in `footprint`;
+the same block allocated with anonymous mmap dropped once deleted). So whether idle
+unloading (unload) means anything depends on how memory is allocated. The test measures
+the real footprint with /usr/bin/footprint.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import numpy as np
 
 from tbmcp import embed, search as S
 
-SATIR, DIM = 60_000, 1024                     # fp16 matris 117 MiB
+SATIR, DIM = 60_000, 1024                     # fp16 matrix 117 MiB
 BOYUT_MB = SATIR * DIM * 2 / 1048576
 
 
@@ -67,8 +68,8 @@ class MatrisBirakma(unittest.TestCase):
         dolu = ayak_izi_mb()
         del ids, mat
         sonra = self._bekle_ve_olc()
-        # Onceki tahsislerin birakip ayiricinin tuttugu bloklar yeniden kullanilabildigi icin
-        # "once"ye gore artis guvenilir degil; olculen sey silmenin ne kadar geri verdigi.
+        # Blocks released by earlier allocations and kept by the allocator can be reused, so
+        # the increase relative to "once" is not reliable; what is measured is how much deletion gives back.
         self.assertGreater(dolu - sonra, 0.8 * BOYUT_MB, f"once {once:.0f}, dolu {dolu:.0f}, sonra {sonra:.0f}")
 
     def test_alt_kume_unload_ile_bellek_doner(self):
