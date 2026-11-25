@@ -2,14 +2,10 @@
 
 An MCP server that answers clinical questions from **your own** PDF textbooks: hybrid search (SQLite FTS5
 BM25 + bge-m3 dense vectors, RRF fusion, cross-encoder reranking) over a single `corpus.sqlite` file, with
-page-level citations and a page-image tool for tables. No books, text or vectors are included in this
-repository; you index PDFs you are entitled to use. The rest of this README is in Turkish.
-
-An MCP server that answers clinical questions using your own PDF textbooks as its source.
-Same division of labor as the DynaMed MCP: **the server searches and retrieves; Claude does the synthesis.**
-
-A single file (`corpus.sqlite`) holds the text, the BM25 index, and the vectors.
-No separate vector database, no separate server, no local LLM.
+page-level citations and a page-image tool for tables. Same division of labor as the DynaMed MCP: **the
+server searches and retrieves; Claude does the synthesis.** That one file holds the text, the BM25 index,
+and the vectors: no separate vector database, no separate server, no local LLM. No books, text or vectors
+are included in this repository; you index PDFs you are entitled to use.
 
 ```
 PDF  →  ingest  →  corpus.sqlite  →  server (MCP/stdio)  →  Claude
