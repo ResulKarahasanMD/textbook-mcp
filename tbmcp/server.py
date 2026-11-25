@@ -204,7 +204,7 @@ def _fmt_hits(hits, query: str, bos_ipucu: str = "") -> str:
                                 "see the coverage with textbook_list_books."))
     out = []
     for i, h in enumerate(hits, 1):
-        head = f"{i}. {h.cite()}  skor={h.score:.3f}"
+        head = f"{i}. {h.cite()}  score={h.score:.3f}"
         if h.section:
             head += f"  |  {h.section[:80]}"
         out.append(f"{head}\n{h.text}")
