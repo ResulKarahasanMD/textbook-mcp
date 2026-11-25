@@ -5,22 +5,22 @@ BM25 + bge-m3 dense vectors, RRF fusion, cross-encoder reranking) over a single 
 page-level citations and a page-image tool for tables. No books, text or vectors are included in this
 repository; you index PDFs you are entitled to use. The rest of this README is in Turkish.
 
-Kendi PDF ders kitaplarını kaynak alarak klinik soru yanıtlayan MCP sunucusu.
-DynaMed MCP ile aynı iş bölümü: **sunucu arar ve getirir, sentezi Claude yapar.**
+An MCP server that answers clinical questions using your own PDF textbooks as its source.
+Same division of labor as the DynaMed MCP: **the server searches and retrieves; Claude does the synthesis.**
 
-Tek dosya (`corpus.sqlite`) içinde hem metin, hem BM25 indeksi, hem vektörler.
-Ayrı vektör veritabanı, ayrı sunucu, yerel LLM yok.
+A single file (`corpus.sqlite`) holds the text, the BM25 index, and the vectors.
+No separate vector database, no separate server, no local LLM.
 
 ```
 PDF  →  ingest  →  corpus.sqlite  →  server (MCP/stdio)  →  Claude
                    ├ pages, toc
-                   ├ chunks + FTS5   (BM25, leksik)
-                   └ embeddings      (bge-m3, anlamsal, float16)
+                   ├ chunks + FTS5   (BM25, lexical)
+                   └ embeddings      (bge-m3, semantic, float16)
 ```
 
-Arama: BM25 ∪ dense → RRF birleştirme → `bge-reranker-v2-m3` cross-encoder → top-k.
+Search: BM25 ∪ dense → RRF fusion → `bge-reranker-v2-m3` cross-encoder → top-k.
 
-## Kurulum
+## Installation
 
 ```sh
 cd textbook-mcp
@@ -28,74 +28,75 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e ".[dense]"
 ```
 
-`-e .` paketi venv'e kurar ve `.venv/bin/textbook-mcp` konsol betiğini üretir —
-MCP kaydı bu betiği kullanır (`-m tbmcp.server` cwd'ye bağımlıdır, kullanma).
+`-e .` installs the package into the venv and generates the `.venv/bin/textbook-mcp` console script —
+the MCP registration uses this script (`-m tbmcp.server` depends on the cwd; don't use it).
 
-## 1. Korpusu tara (yazmadan)
+## 1. Survey the corpus (read-only)
 
-Hangi kitapların metin katmanı var, hangileri taranmış:
+Which books have a text layer and which are scanned (`/kitap/dizini` and `/not/dizini` stand for your
+book and notes directories):
 
 ```sh
 .venv/bin/python -m tbmcp.ingest /kitap/dizini --probe
 ```
 
-Sayfa başına ortalama karakter **< 200** ise o kitap taranmıştır, OCR gerekir.
+If the average number of characters per page is **< 200**, the book is scanned and needs OCR.
 
-## 2. OCR (yalnız taranmış kitaplar için)
+## 2. OCR (scanned books only)
 
 ```sh
-brew install ocrmypdf             # kurulu değilse (tesseract'ı da getirir)
-brew install tesseract-lang       # eng dışında dil gerekiyorsa
+brew install ocrmypdf             # if not installed (also pulls in tesseract)
+brew install tesseract-lang       # if you need languages other than eng
 ./ocr.sh /kitap/dizini eng
 ```
 
-Orijinallere dokunmaz; çıktı `/kitap/dizini/_ocr/`. Sayfa başına ~1.5 sn.
+The originals are left untouched; output goes to `/kitap/dizini/_ocr/`. About 1.5 s per page.
 
-## 3. İndeksle
+## 3. Index
 
 ```sh
 .venv/bin/python -m tbmcp.ingest /kitap/dizini --db corpus.sqlite
-.venv/bin/python -m tbmcp.ingest /kitap/dizini/_ocr --db corpus.sqlite   # OCR'lananlar
+.venv/bin/python -m tbmcp.ingest /kitap/dizini/_ocr --db corpus.sqlite   # the OCR'd books
 ```
 
-Aynı dosya ikinci kez atlanır; korpusa sonradan kitap eklemek güvenlidir.
+A file that is already indexed is skipped; adding books to the corpus later is safe.
 
-İki koleksiyon vardır ve ayrı aranır: `textbook` (varsayılan) ve `notes` (ders notları, genellikle
-kitaplardan farklı bir dilde). Notları ikinci koleksiyona almak için:
+There are two collections, searched separately: `textbook` (the default) and `notes` (lecture notes, usually
+in a different language from the books). To ingest notes into the second collection:
 
 ```sh
 .venv/bin/python -m tbmcp.ingest /not/dizini --db corpus.sqlite --collection notes --lang tr
 ```
 
-Kitap kimliği (slug) dosya adından üretilir. Dosya adlarında sabit bir ek ya da kuyruk varsa
-`--strip-name=REGEX` ile slug'dan önce silinir (yinelenebilir; ifade `-` ile başlıyorsa `=` biçimi zorunludur):
+The book ID (slug) is derived from the file name. If the file names carry a fixed suffix or tail, remove it
+before slugging with `--strip-name=REGEX` (repeatable; if the expression starts with `-`, the `=` form is required):
 
 ```sh
 .venv/bin/python -m tbmcp.ingest /kitap/dizini --db corpus.sqlite --strip-name='--\s*kopya.*$'
 ```
 
-FTS indeksi her kitapla birlikte artımlı güncellenir; bozulduğundan
-şüphelenirsen `--rebuild-fts` ile sıfırdan kur. Tek bozuk PDF koşuyu
-öldürmez — hata basılır, kalan kitaplar işlenir.
+The FTS index is updated incrementally with each book; if you suspect it is
+corrupted, rebuild it from scratch with `--rebuild-fts`. A single broken PDF does not
+kill the run — the error is printed and the remaining books are processed.
 
-## 4. Vektörle (tek seferlik, MPS)
+## 4. Embed (one-time, MPS)
 
 ```sh
 .venv/bin/python -m tbmcp.embed --db corpus.sqlite
 ```
 
-Kaldığı yerden devam eder — yarıda kesip sonra sürdürebilirsin.
-Vektörler olmadan da sunucu çalışır (yalnız BM25, `TEXTBOOK_DENSE=0`).
+It resumes where it left off — you can interrupt it and continue later.
+The server also works without vectors (BM25 only, `TEXTBOOK_DENSE=0`).
 
-## 5. Dene
+## 5. Try it
 
 ```sh
 .venv/bin/python -m tbmcp.search --db corpus.sqlite "diabetic ketoacidosis insulin infusion"
 ```
 
-Katmanları ayrı ayrı görmek için: `--no-dense`, `--no-rerank`.
+To inspect the layers separately: `--no-dense`, `--no-rerank`.
 
-## 6. Claude Code'a bağla
+## 6. Connect to Claude Code
 
 ```sh
 claude mcp add textbook --scope user \
@@ -104,110 +105,110 @@ claude mcp add textbook --scope user \
   -- $PWD/.venv/bin/textbook-mcp
 ```
 
-Vektörler henüz hazır değilse `TEXTBOOK_DENSE=0` ile başlat; `durum.sh` BİTTİ
-deyince önce `scripts/fix_sections.py` çalıştır, sonra kaydı `DENSE=1` ile yenile.
+If the vectors are not ready yet, start with `TEXTBOOK_DENSE=0`; once `durum.sh` (embedding status) reports
+`BITTI` ("done"), first run `scripts/fix_sections.py`, then re-register with `DENSE=1`.
 
-Önerilen iş akışı: ara → sayfayı aç → sayfa numarasıyla alıntıla. Bunu bir Claude Code skill'i ile
-zorlayabilirsin (bu depoda yok).
+Recommended workflow: search → open the page → cite with the page number. You can enforce this with a
+Claude Code skill (not included in this repository).
 
-## Araçlar
+## Tools
 
-| Araç | İş |
+| Tool | Purpose |
 |---|---|
-| `textbook_search(query, book?, top_k)` | Ders kitaplarında hibrit arama, `[kitap s.N]` künyeli |
-| `textbook_notes_search(query, book?, top_k)` | Ders notlarında (`notes` koleksiyonu) arama; ayrı havuz |
-| `textbook_get_page(book, page, window)` | Tam sayfa + komşuları |
-| `textbook_find_in_book(book, query)` | Tek kitap içinde |
-| `textbook_toc(book, depth, contains)` | İçindekiler (PDF yer imleri) |
-| `textbook_list_books()` | Korpus envanteri |
-| `textbook_page_image(book, page, dpi)` | Sayfa görüntüsü — **tablolar için** |
-| `textbook_corpus_info()` | İndeks durumu |
+| `textbook_search(query, book?, top_k)` | Hybrid search across the textbooks, with `[book s.N]` citations (`s.` = *sayfa*, page) |
+| `textbook_notes_search(query, book?, top_k)` | Search across the lecture notes (the `notes` collection); a separate pool |
+| `textbook_get_page(book, page, window)` | Full page + its neighbors |
+| `textbook_find_in_book(book, query)` | Within a single book |
+| `textbook_toc(book, depth, contains)` | Table of contents (PDF bookmarks) |
+| `textbook_list_books()` | Corpus inventory |
+| `textbook_page_image(book, page, dpi)` | Page image — **for tables** |
+| `textbook_corpus_info()` | Index status |
 
-## Neden bu tasarım
+## Why this design
 
-- **Hibrit, saf vektör değil.** Tıp sorgularında terimler birebir geçer ("HbA1c",
-  "Ranson"); BM25 bunları vektörden iyi bulur. Vektör de ifade benzerliğini yakalar.
-- **Reranker en büyük tek kalite kazancı.** İlk aşamadan 30 aday → cross-encoder →
-  en iyi 8. Sorgu başına ~1,5 sn — ölçüldü, ödemeye değer.
-- **bge-m3 çok dilli.** Türkçe sorulan soru İngilizce metni bulur.
-- **ANN indeksi yok.** 504k parça × 1024 boyut × fp16 = ~1,0 GB; numpy matmul ile
-  sorgu ~50 ms. Bu ölçekte FAISS/Chroma gereksiz karmaşıklık.
-- **Sayfa görüntüsü aracı.** Doz tabloları ve evreleme şemaları düz metne
-  çevrildiğinde bozulur; Claude sayfayı görüntü olarak okuyabilir.
+- **Hybrid, not pure vector.** Medical queries contain terms verbatim ("HbA1c",
+  "Ranson"); BM25 finds these better than vectors do. Vectors, in turn, capture paraphrase similarity.
+- **The reranker is the single biggest quality gain.** 30 candidates from the first stage → cross-encoder →
+  best 8. About 1.5 s per query — measured, and worth paying.
+- **bge-m3 is multilingual.** A question asked in Turkish finds English text.
+- **No ANN index.** 504k chunks × 1024 dimensions × fp16 = ~1.0 GB; with a numpy matmul a
+  query takes ~50 ms. At this scale FAISS/Chroma is unnecessary complexity.
+- **Page-image tool.** Dosing tables and staging schemes get mangled when converted
+  to plain text; Claude can read the page as an image.
 
-## Ölçülen değerler (yazarın Apple Silicon Mac'i, MPS)
+## Measured values (the author's Apple Silicon Mac, MPS)
 
-43 tıp ders kitabı / 90.561 sayfa / 503.561 parça, `corpus.sqlite` **1,48 GB**:
+43 medical textbooks / 90,561 pages / 503,561 chunks, `corpus.sqlite` **1.48 GB**:
 
-| Adım | Ölçüm |
+| Step | Measurement |
 |---|---|
-| PDF metin çıkarma | 20 sayfa/sn (disk-bağımlı) → 43 kitap ~2,5 saat |
-| OCR | gerekmedi (43 kitabın 43'ünde metin katmanı var) |
-| FTS5 indeksi | ~1 dk |
-| Embedding (bge-m3, fp16, seq512, batch 32) | 13-18 parça/sn → ~8-10 saat, tek sefer |
-| BM25 sorgusu | 1 ms |
-| Dense sorgu (500k × 1024 fp16, numpy matmul) | ~50 ms |
-| Rerank (30 aday) | ~1,5 sn |
-| Model yükleme (soğuk başlangıç, tek sefer) | 8 sn |
+| PDF text extraction | 20 pages/s (disk-bound) → 43 books ~2.5 hours |
+| OCR | not needed (43 of the 43 books have a text layer) |
+| FTS5 index | ~1 min |
+| Embedding (bge-m3, fp16, seq512, batch 32) | 13-18 chunks/s → ~8-10 hours, one-time |
+| BM25 query | 1 ms |
+| Dense query (500k × 1024 fp16, numpy matmul) | ~50 ms |
+| Rerank (30 candidates) | ~1.5 s |
+| Model loading (cold start, one-time) | 8 s |
 
-Ayar notları: `max_seq_length=512` + fp16 embedding'i %37 hızlandırdı (13,3 → 18,3
-parça/sn) — parçalar ~300 token olduğu için 1024 zaten israftı. Reranker MPS'te
-aday sayısıyla doğru orantılı (~52 ms/aday), bu yüzden aday sayısı 50 yerine 30.
+Tuning notes: `max_seq_length=512` + fp16 sped up embedding by 37% (13.3 → 18.3
+chunks/s) — since chunks are ~300 tokens, 1024 was already wasteful. On MPS the reranker scales
+linearly with the number of candidates (~52 ms/candidate), which is why the candidate count is 30 instead of 50.
 
-### Bellek (2026-09-30, 146 kitap / 1,24 M vektör)
+### Memory (2026-09-30, 146 books / 1.24 M vectors)
 
-Sunucu süreci, beş arama sonrası 4 sn beklenerek (`/usr/bin/footprint`, phys_footprint;
-ölçüm betiği ve ham çıktılar bu depoda yok):
+Server process, after five searches followed by a 4 s wait (`/usr/bin/footprint`, phys_footprint;
+the measurement script and raw outputs are not in this repository):
 
-| Senaryo | Önce | Sonra | Zirve önce → sonra |
+| Scenario | Before | After | Peak before → after |
 |---|---|---|---|
-| Tek kitapla sınırlı (`textbook_find_in_book`) | 8876 MB | 3398 MB | 8950 → 4613 MB |
-| Tüm ders kitabı koleksiyonu (`textbook_search`) | 8872 MB | 5681 MB | 8950 → 6884 MB |
-| Ders notu koleksiyonu (`textbook_notes_search`) | 8876 MB | 3275 MB | 8952 → 4383 MB |
+| Restricted to one book (`textbook_find_in_book`) | 8876 MB | 3398 MB | 8950 → 4613 MB |
+| Whole textbook collection (`textbook_search`) | 8872 MB | 5681 MB | 8950 → 6884 MB |
+| Lecture notes collection (`textbook_notes_search`) | 8876 MB | 3275 MB | 8952 → 4383 MB |
 
-15 sorgunun 15'inde sonuç kimlikleri ve skorları eski kodla aynı. Değişiklikler:
+In 15 of 15 queries the result IDs and scores are identical to the old code. Changes:
 
-- **Modeller cihaza tensör tensör fp16 taşınıyor** (`embed.move_fp16`). Cihazda fp32 yükleyip
-  `.half()` çağırmak MPS'te model başına ~1,1 GB boşa harcıyordu (fp16 tensörler fp32 boylu
-  tamponlarda: canlı 1682 MiB, olması gereken 1083).
-- **Her aramadan sonra `torch.mps.empty_cache()`** (`search.release_device_cache`, 81 ms): MPS
-  aktivasyon tamponlarını ~1 GB tutuyordu. Geri verilen bellek ayak izinden 3–4 sn
-  gecikmeyle düşüyor.
-- **Filtreli dense arama tüm matrisi yüklemiyor**: tek kitap ya da ≤200k satırlık koleksiyon
-  için yalnız o satırlar çekiliyor (`search._subset_matrix`; en büyük kitap 106 MB, ders notu
-  koleksiyonu 39 MB). Tüm matris (2,5 GB) ancak filtresiz arama gelince yükleniyor.
-- **Matris ve alt kümeler anonim mmap üzerinde** (`embed.empty_f16`): macOS libmalloc bırakılan
-  büyük blokları tutuyor (silinmiş 2,3 GB ayak izinde kalıyordu); mmap'le boşaltma gerçekten
-  geri veriyor. Puanlama da 268 MB'lık geçiciler yerine 8 MB'lık sabit tamponla yapılıyor.
+- **Models are moved to the device in fp16, tensor by tensor** (`embed.move_fp16`). Loading in fp32 on the
+  device and calling `.half()` wasted ~1.1 GB per model on MPS (fp16 tensors in fp32-sized
+  buffers: 1682 MiB live, versus the expected 1083).
+- **`torch.mps.empty_cache()` after every search** (`search.release_device_cache`, 81 ms): MPS
+  was holding ~1 GB of activation buffers. The released memory drops out of the footprint with a
+  3–4 s delay.
+- **Filtered dense search does not load the whole matrix**: for a single book or a collection of ≤200k rows,
+  only those rows are fetched (`search._subset_matrix`; the largest book is 106 MB, the lecture notes
+  collection 39 MB). The full matrix (2.5 GB) is loaded only when an unfiltered search arrives.
+- **The matrix and subsets live on anonymous mmap** (`embed.empty_f16`): macOS libmalloc holds on to freed
+  large blocks (a deleted 2.3 GB stayed in the footprint); freeing via mmap actually
+  returns it. Scoring also uses a fixed 8 MB buffer instead of 268 MB temporaries.
 
-Bilinen kalıntı: boşta boşaltmadan sonra süreç 390–980 MB'ta kalıyor (eski kod 373–944 MB).
-Fark, model yüklenirken ayrılıp bırakılan küçük/orta blokların (MALLOC_SMALL) ayırıcıda
-kalmasından; `malloc_zone_pressure_relief` geri almıyor. Sıfırlamak için modellerin alt
-süreçte çalışması gerekir.
+Known residue: after idle unloading the process stays at 390–980 MB (old code 373–944 MB).
+The difference comes from small/medium blocks (MALLOC_SMALL) allocated and released while the models load
+staying in the allocator; `malloc_zone_pressure_relief` does not reclaim them. Getting it to zero would require
+running the models in a subprocess.
 
-Testler: `.venv/bin/python -m unittest discover -s tests -t .` (model gerektirmez);
-GPU bellek testleri için başına `TEXTBOOK_GPU_TESTS=1` (~20 sn, iki modeli yükler).
+Tests: `.venv/bin/python -m unittest discover -s tests -t .` (no models required);
+for the GPU memory tests, prefix with `TEXTBOOK_GPU_TESTS=1` (~20 s, loads both models).
 
-## Sınırlar
+## Limitations
 
-- OCR'lı sayfalarda metin hatalı olabilir; kritik sayılarda `textbook_page_image`
-  ile aslını doğrula.
-- **Vektörler hazır olana kadar Türkçe sorgu çalışmaz.** BM25 leksiktir: "preeklampside
-  magnezyum sulfat dozu" sorgusu İngilizce metinde sıfır sonuç verir. Dense katman
-  tamamlanınca çapraz dilli arama açılır. O zamana dek sorguları İngilizce yaz.
-- `page` her yerde **PDF sayfa numarasıdır**, kitabın basılı sayfa numarası değil.
-  (`books.page_offset` alanı bunun için ayrıldı, henüz kullanılmıyor.)
-- İçindekiler PDF yer imlerinden gelir; yer imi olmayan kitapta `textbook_toc` boş döner.
-- Ders kitabı ≠ güncel kılavuz. Tedavi önerilerinde baskı yılına bak, DynaMed ile
-  çapraz kontrol et.
-- **Vektör ve rerank yolu bu yayın sürümünde yeniden sınanmadı.** Yayın için yapılan değişikliklerden sonra
-  koşulanlar: model gerektirmeyen birim testleri ve yalnız BM25 ile uçtan uca indeksleme ve arama. İki modeli
-  (`bge-m3`, `bge-reranker-v2-m3`) yükleyen üç GPU bellek testi ve dense/rerank araması koşulmadı; yukarıdaki
-  ölçümler özel sürümle alınmıştır.
-- Bu depoda korpus yok: kitaplar, `corpus.sqlite`, parçalar ve vektörler yayımlanmaz. Yalnız kullanma hakkın olan
-  PDF'leri indeksle; içerikten ve telif haklarından kullanıcı sorumludur.
+- Text on OCR'd pages may contain errors; for critical numbers, verify against the original with
+  `textbook_page_image`.
+- **Turkish queries do not work until the vectors are ready.** BM25 is lexical: the query "preeklampside
+  magnezyum sulfat dozu" (magnesium sulfate dose in preeclampsia) returns zero results against English text.
+  Cross-lingual search becomes available once the dense layer is complete. Until then, write your queries in English.
+- `page` is everywhere the **PDF page number**, not the book's printed page number.
+  (The `books.page_offset` field is reserved for this but not used yet.)
+- The table of contents comes from PDF bookmarks; for a book without bookmarks `textbook_toc` returns nothing.
+- A textbook ≠ a current guideline. For treatment recommendations, check the edition year and
+  cross-check with DynaMed.
+- **The vector and rerank paths have not been re-tested in this release.** What was run after the changes made
+  for the release: the unit tests that need no models, and end-to-end indexing and search with BM25 only. The
+  three GPU memory tests that load both models (`bge-m3`, `bge-reranker-v2-m3`) and dense/rerank search were not
+  run; the measurements above were taken with the private version.
+- This repository contains no corpus: the books, `corpus.sqlite`, chunks and vectors are not published. Index only
+  PDFs you have the right to use; the user is responsible for the content and its copyright.
 
-## Lisans
+## License
 
-Kod: [MIT](LICENSE).
+Code: [MIT](LICENSE).
 

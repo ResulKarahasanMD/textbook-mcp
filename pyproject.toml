@@ -1,7 +1,7 @@
 [project]
 name = "textbook-mcp"
 version = "0.1.0"
-description = "Yerel PDF ders kitabi korpusu icin MCP sunucusu (hibrit arama + rerank)"
+description = "MCP server for a local PDF textbook corpus (hybrid search + rerank)"
 requires-python = ">=3.12"
 license = "MIT"
 readme = "README.md"
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Anlamsal katman. Bunlar olmadan sunucu yalniz BM25 ile calisir.
+# Semantic layer. Without these the server runs with BM25 only.
 dense = [
     "sentence-transformers>=3",
     "torch",
