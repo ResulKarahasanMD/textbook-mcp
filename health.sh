@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Corpus health report — as markdown on stdout. Read-only; writes nothing.
 #
-#   ./saglik.sh                      # to the screen
-#   ./saglik.sh > saglik-raporu-$(date +%F).md
+#   ./health.sh                      # to the screen
+#   ./health.sh > health-report-$(date +%F).md
 #
 # Replaces the hand-written saglik-raporu-*.md files: those went stale
 # (the one dated 2026-09-21 said 88 books / 100% vectors; the real count was 146 books).

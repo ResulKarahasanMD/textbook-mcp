@@ -24,7 +24,7 @@ def main() -> int:
     a = ap.parse_args()
 
     if not a.force and b"tbmcp.embed" in subprocess.run(["ps", "ax"], capture_output=True).stdout:
-        print("ERROR: tbmcp.embed is running. Wait for it to finish (durum.sh) or use --force.",
+        print("ERROR: tbmcp.embed is running. Wait for it to finish (status.sh) or use --force.",
               file=sys.stderr)
         return 1
 

@@ -34,3 +34,4 @@ models/
 # Generated reports/logs
 *.log
 saglik-raporu-*.md
+health-report-*.md
